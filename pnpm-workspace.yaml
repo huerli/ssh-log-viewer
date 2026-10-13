@@ -1,0 +1,8 @@
+packages:
+  - .
+allowBuilds:
+  electron: true
+  esbuild: true
+  ssh2: true
+  cpu-features: false
+  electron-winstaller: false

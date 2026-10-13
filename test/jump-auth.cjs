@@ -1,0 +1,28 @@
+const { _electron } = require('playwright');
+const fs = require('node:fs/promises');const path = require('node:path');const os = require('node:os');const assert = require('node:assert/strict');
+const { createServer } = require('./ssh-fixture.cjs');const { createJump } = require('./jump-fixture.cjs');
+(async()=>{const temp=await fs.mkdtemp(path.join(os.tmpdir(),'viewer-jump-auth-'));let app,target,jump;try{
+ const root=path.join(temp,'remote');await fs.mkdir(path.join(root,'system/log'),{recursive:true});await fs.writeFile(path.join(root,'system/log/auth.log'),'auth-ok');
+ target=await createServer(root);jump=await createJump([target.port],{keyboardOnly:true});
+ await fs.mkdir(path.join(temp,'config'));
+ const emptyHop={name:'test-hop',host:'127.0.0.1',port:jump.port,username:'jumper',auth:'password',keyPath:'',rememberPassword:true,hasPassword:false,enabled:true};
+ await fs.writeFile(path.join(temp,'config/settings.json'),JSON.stringify({profiles:[{name:'target',host:'127.0.0.1',port:target.port,username:'tester',auth:'password',keyPath:'',jumpName:emptyHop.name,jump:emptyHop}],lastProfileName:'target',jumpProfiles:[emptyHop]}));
+ app=await _electron.launch({...process.env.VIEWER_TEST_EXECUTABLE?{executablePath:process.env.VIEWER_TEST_EXECUTABLE,args:[]}:{args:['.']},cwd:path.resolve(__dirname,'..'),env:{...process.env,VIEWER_DATA_DIR:path.join(temp,'config')}});
+ await app.evaluate(({dialog})=>{dialog.showMessageBox=async()=>({response:1});});const page=await app.firstWindow();
+ await page.waitForFunction(()=>document.querySelector('input[placeholder=生产服务器]')?.value==='target');
+ await page.getByRole('button',{name:'连接',exact:true}).click();await page.getByRole('dialog',{name:'跳板机配置'}).waitFor();
+ assert.ok((await page.locator('.settings-error').innerText()).includes('跳板机密码'));
+ await page.getByRole('button',{name:'关闭',exact:true}).click();
+ const hop={name:'test-hop',host:'127.0.0.1',port:jump.port,username:'jumper',auth:'password',keyPath:'',rememberPassword:false,password:'jump-password',enabled:true};
+ const profile={name:'target',host:'127.0.0.1',port:target.port,username:'tester',auth:'password',keyPath:'',password:'fixture-password',jumpName:hop.name,jump:hop};
+ await page.evaluate(value=>window.viewer.saveJumpProfile(value),hop);
+ assert.equal(await page.evaluate(async()=> (await window.viewer.loadJumpProfile('test-hop')).password),'');
+ await page.evaluate(value=>window.viewer.connect(value),profile);
+ assert.equal((await page.evaluate(()=>window.viewer.list('/system/log'))).entries[0].name,'auth.log');await page.evaluate(()=>window.viewer.disconnect());
+ assert.ok(!(await fs.readFile(path.join(temp,'config/settings.json'),'utf8')).includes('jump-password'));
+ await assert.rejects(page.evaluate(value=>window.viewer.connect(value),{...profile,jump:{...hop,password:''}}),/跳板机未填写密码/);
+ await page.evaluate(value=>window.viewer.saveJumpProfile(value),{...hop,rememberPassword:true});
+ await assert.rejects(page.evaluate(value=>window.viewer.connect(value),{...profile,jump:{...hop,password:'wrong-new-password'}}),/跳板机认证失败/);
+ await page.evaluate(value=>window.viewer.connect(value),{...profile,jump:{...hop,password:''}});await page.evaluate(()=>window.viewer.disconnect());
+ console.log('Jump auth regression passed: unsaved in-session password, keyboard-interactive, fresh password takes priority, saved-password fallback and actionable empty-password error.');
+}finally{if(app)await app.close();if(jump)await jump.close();if(target)await target.close();await fs.rm(temp,{recursive:true,force:true});}})().catch(error=>{console.error(error);process.exitCode=1;});

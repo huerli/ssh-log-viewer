@@ -1,0 +1,71 @@
+const { _electron } = require('playwright');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const assert = require('node:assert/strict');
+const { gzipSync } = require('node:zlib');
+
+(async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'viewer-local-folder-'));
+  let app;
+  try {
+    const root = path.join(temp, 'logs'), nested = path.join(root, 'nested');
+    await fs.mkdir(nested, { recursive: true });
+    await fs.writeFile(path.join(root, 'plain.log'), 'INFO folder-marker 中文\n');
+    await fs.writeFile(path.join(root, 'compressed.log.gz'), gzipSync('ERROR folder-marker gzip 中文\n'));
+    await fs.writeFile(path.join(nested, 'child.log'), 'INFO folder-marker child\n');
+    await fs.writeFile(path.join(temp, 'outside.log'), 'outside');
+    await fs.symlink(path.join(temp, 'outside.log'), path.join(root, 'outside-link.log'));
+    app = await _electron.launch({ ...(process.env.VIEWER_TEST_EXECUTABLE ? { executablePath: process.env.VIEWER_TEST_EXECUTABLE, args: [] } : { args: ['.'] }), cwd: path.resolve(__dirname, '..'), env: { ...process.env, VIEWER_DATA_DIR: path.join(temp, 'config') } });
+    await app.evaluate(({ dialog }, root) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [root] }); }, root);
+    const page = await app.firstWindow(); const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    await page.getByRole('button', { name: '打开本地文件夹', exact: true }).click();
+    await page.getByLabel('本地路径', { exact: true }).waitFor();
+    assert.equal(await page.getByLabel('本地路径', { exact: true }).inputValue(), root);
+    assert.equal(await page.getByLabel('文件来源', { exact: true }).inputValue(), 'local');
+    assert.equal(await page.getByRole('button', { name: '↰ 上级目录', exact: true }).isDisabled(), true);
+    assert.equal(await page.locator('.file-entry').filter({ hasText: 'outside-link' }).count(), 0);
+    await page.getByPlaceholder('搜索全文关键词或正则表达式…').fill('folder-marker');
+    await page.getByRole('button', { name: '搜索全文', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.batch-summary')?.textContent.includes('2/2'));
+    assert.equal(await page.locator('.search-results .result').count(), 2);
+    assert.equal(await page.getByLabel('搜索范围', { exact: true }).inputValue(), 'folder');
+    await page.locator('.search-results .result').filter({ hasText: 'gzip 中文' }).click();
+    await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('1 行'));
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('gzip 中文')));
+    assert.equal(await page.locator('.search-results .result').count(), 2);
+    await page.locator('.file-entry').filter({ hasText: 'plain.log' }).click();
+    await page.getByRole('button', { name: '查看', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.document-bar strong')?.textContent.endsWith('plain.log') && document.querySelector('.document-bar')?.textContent.includes('1 行'));
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('folder-marker 中文')));
+    await page.getByLabel('文件名匹配', { exact: true }).fill('*.gz');
+    assert.equal(await page.locator('.file-entry').filter({ hasText: 'plain.log' }).count(), 0);
+    await page.getByRole('button', { name: '搜索全文', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.batch-summary')?.textContent.includes('1/1'));
+    assert.equal(await page.locator('.search-results .result').count(), 1);
+    await page.locator('.file-entry').filter({ hasText: 'nested' }).dblclick();
+    await page.waitForFunction(dir => document.querySelector('input[aria-label="本地路径"]')?.value === dir, nested);
+    await page.locator('.file-entry').filter({ hasText: 'child.log' }).dblclick();
+    await page.waitForFunction(() => document.querySelector('.document-bar strong')?.textContent.endsWith('child.log') && document.querySelector('.document-bar')?.textContent.includes('1 行'));
+    await page.getByRole('button', { name: '↰ 上级目录', exact: true }).click();
+    await page.waitForFunction(dir => document.querySelector('input[aria-label="本地路径"]')?.value === dir, root);
+    await fs.writeFile(path.join(root, 'new.log'), 'INFO folder-marker new\n');
+    await page.getByRole('button', { name: '搜索全文', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.batch-summary')?.textContent.includes('3/3'));
+    assert.equal(await page.locator('.search-results .result').count(), 3);
+    const rejected = await page.evaluate(async outside => {
+      try { await window.viewer.openLocalFile(outside); return false; } catch { return true; }
+    }, path.join(temp, 'outside.log'));
+    assert.equal(rejected, true);
+    await page.getByLabel('文件来源', { exact: true }).selectOption('remote');
+    await page.getByLabel('文件来源', { exact: true }).selectOption('local');
+    assert.equal(await page.getByLabel('本地路径', { exact: true }).inputValue(), root);
+    await app.evaluate(({ dialog }) => { dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] }); });
+    await page.getByRole('button', { name: '打开本地文件夹', exact: true }).click();
+    assert.equal(await page.getByLabel('本地路径', { exact: true }).inputValue(), root);
+    assert.deepEqual(errors, []);
+    await page.screenshot({ path: path.resolve(__dirname, '../docs/local-folder.png') });
+    console.log('Local folder passed: directory browsing, plain/gzip view, filename filter, group search, local result jump, newly added files, source switching, cancel and root boundary.');
+  } finally { if (app) await app.close(); await fs.rm(temp, { recursive: true, force: true }); }
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,0 +1,248 @@
+const { _electron: electron } = require('playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const { gzipSync } = require('node:zlib');
+const { createServer } = require('./ssh-fixture.cjs');
+
+async function main() {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'viewer-desktop-'));
+  let application, server;
+  const started = Date.now();
+  try {
+    const remote = path.join(temporary, 'remote/system/log'); await fs.mkdir(remote, { recursive: true });
+    const log = path.join(remote, 'large.log');
+    const output = await fs.open(log, 'w');
+    const batch = Buffer.from(('2026-10-12 INFO 中文服务日志 trace=abc payload=' + 'x'.repeat(80) + '\n').repeat(4096));
+    let bytes = 0;
+    while (bytes < 50 * 1024 ** 2) { await output.write(batch); bytes += batch.length; }
+    await output.write(Buffer.from('ERROR TARGET-42 中文匹配\n')); await output.close();
+    await fs.writeFile(path.join(remote, 'small.log.gz'), gzipSync('INFO 中文压缩日志\nERROR compressed-marker\n'));
+    await fs.writeFile(path.join(remote, 'evil.log'), 'a'.repeat(100000) + '!\n');
+    await fs.writeFile(path.join(remote, 'signal.2026-10-12.01.log'), Array.from({ length: 100 }, (_, i) => i === 61 ? 'ERROR batch-marker plain' : 'INFO normal').join('\n'));
+    await fs.writeFile(path.join(remote, 'signal.2026-10-12.02.log.gz'), gzipSync('INFO first\nERROR batch-marker compressed\nINFO last\n'));
+    await fs.writeFile(path.join(remote, 'signal.2026-10-12.03.log'), 'ERROR batch-marker third\n');
+    await fs.writeFile(path.join(remote, 'signal.2026-10-13.01.log'), 'ERROR batch-marker excluded\n');
+    await fs.mkdir(path.join(temporary, 'config'));
+    await fs.writeFile(path.join(temporary, 'config/settings.json'), JSON.stringify({ directories: { download: path.join(temporary, 'downloads'), extract: path.join(temporary, 'extracted') } }));
+    server = await createServer(path.join(temporary, 'remote'));
+    application = await electron.launch({ ...(process.env.VIEWER_TEST_EXECUTABLE ? { executablePath: process.env.VIEWER_TEST_EXECUTABLE, args: [] } : { args: ['.'] }), cwd: path.resolve(__dirname, '..'), env: { ...process.env, VIEWER_DATA_DIR: path.join(temporary, 'config') }, timeout: 30000 });
+    await application.evaluate(({ dialog }, temp) => {
+      dialog.showMessageBox = async () => ({ response: 1 });
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath: temp + '/download.log' });
+      dialog.showOpenDialog = async (_window, options) => ({ canceled: false, filePaths: [options.title.includes('父目录') ? temp : temp + '/remote/system/log/large.log'] });
+    }, temporary);
+    const page = await application.firstWindow();
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    await page.getByLabel('主机', { exact: true }).fill('127.0.0.1');
+    await page.getByLabel('端口', { exact: true }).fill(String(server.port));
+    await page.getByLabel('用户名', { exact: true }).fill('tester');
+    await page.getByLabel('密码', { exact: true }).fill('fixture-password');
+    assert.equal(await page.getByLabel('用户名', { exact: true }).inputValue(), 'tester');
+    assert.equal(await page.getByLabel('密码', { exact: true }).inputValue(), 'fixture-password');
+    await page.getByRole('button', { name: '连接', exact: true }).click();
+    await page.locator('.connection-pill.connected').waitFor({ timeout: 20000 });
+    console.log('SSH connected');
+    await page.getByLabel('文件名匹配', { exact: true }).fill('signal.2026-10-12.*');
+    await page.getByPlaceholder('搜索全文关键词或正则表达式…').fill('batch-marker');
+    await page.getByRole('button', { name: '搜索全文', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.batch-summary')?.textContent.includes('3/3'));
+    assert.equal(await page.locator('.search-results .result').count(), 3);
+    assert.equal(await page.locator('.search-results .result').filter({ hasText: 'excluded' }).count(), 0);
+    await page.locator('.search-results .result').filter({ hasText: '01.log' }).click();
+    await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('01.log') && document.querySelector('.document-bar')?.textContent.includes('100 行'));
+    await page.waitForFunction(() => [...document.querySelectorAll('.log-row')].some(row => row.querySelector('.line-number')?.textContent.trim() === '62' && row.querySelector('.line-content')?.textContent.includes('batch-marker plain')));
+    assert.equal(await page.locator('.search-results .result').count(), 3);
+    await page.locator('.search-results .result').filter({ hasText: '02.log.gz' }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('batch-marker compressed')));
+    await fs.writeFile(path.join(remote, 'signal.2026-10-12.04.log.gz'), 'invalid gzip');
+    const partial = await page.evaluate(() => window.viewer.searchFiles('/system/log', 'signal.2026-10-12.*', 'batch-marker', { regex: false, caseSensitive: false }, 'partial-test'));
+    assert.equal(partial.count, 3); assert.equal(partial.searchedFiles, 3); assert.equal(partial.files, 4); assert.equal(partial.errors.length, 1);
+    const cancelled = await page.evaluate(async () => {
+      const work = window.viewer.searchFiles('/system/log', 'evil.log', '(a+)+$', { regex: true, caseSensitive: false }, 'cancel-test');
+      const timer = setTimeout(() => void window.viewer.cancelSearch(), 300);
+      try { await work; return false; } catch { return true; } finally { clearTimeout(timer); }
+    });
+    assert.equal(cancelled, true);
+    await page.getByLabel('文件名匹配', { exact: true }).fill('');
+    await page.getByRole('button', { name: '目录设置', exact: true }).click();
+    assert.equal(await page.getByLabel('默认下载目录', { exact: true }).inputValue(), path.join(temporary, 'downloads'));
+    assert.equal(await page.getByLabel('默认解压目录', { exact: true }).inputValue(), path.join(temporary, 'extracted'));
+    await page.getByRole('button', { name: '关闭目录设置', exact: true }).click();
+    console.log('Filename glob search across plain/gzip logs, excluded filenames, cross-file result jumps and directory settings passed');
+
+    await page.locator('.file-entry').filter({ hasText: 'large.log' }).dblclick();
+    await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('large.log') && document.querySelector('.document-bar')?.textContent.includes('行'), null, { timeout: 30000 });
+    console.log('Large remote file cached');
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('TARGET-42')));
+    assert.ok(await page.locator('.log-row').count() < 100);
+    await page.locator('.log-viewport').evaluate(element => { element.scrollTop = Number.MAX_SAFE_INTEGER; });
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('TARGET-42')));
+    const beforeWheel = await page.locator('.log-viewport').evaluate(e => e.scrollHeight);
+    await page.locator('.log-viewport').hover(); await page.mouse.wheel(0, 3000);
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator('.log-viewport').evaluate(e => e.scrollHeight), beforeWheel);
+    const cachedAt = Date.now();
+    assert.equal(await page.getByLabel('已保存连接', { exact: true }).inputValue(), '127.0.0.1');
+    async function context(text) {
+      const target = page.locator('.line-content').filter({ hasText: text }).first();
+      const selectionBox = await target.evaluate((element, word) => {
+        const walk = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        let node; while ((node = walk.nextNode())) {
+          const offset = node.textContent.indexOf(word);
+          if (offset >= 0) {
+            const range = document.createRange(); range.setStart(node, offset); range.setEnd(node, offset + word.length);
+            const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); const box = range.getBoundingClientRect(); return { x: box.x + Math.min(3, box.width / 2), y: box.y + box.height / 2 };
+          }
+        }
+      }, text);
+      assert.ok(selectionBox); await page.mouse.click(selectionBox.x, selectionBox.y, { button: 'right' });
+      await page.getByRole('menu', { name: '日志文本操作' }).waitFor();
+    }
+    await page.getByRole('button', { name: '首行', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.line-number')?.textContent.trim() === '1');
+    await context('trace=abc');
+    await page.getByRole('menuitem', { name: '高亮所有该字符串', exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content mark')].filter(e => e.textContent === 'trace=abc').length > 10);
+    await context('trace=abc');
+    await page.getByRole('menuitem', { name: '取消该字符串高亮', exact: true }).click();
+    assert.equal(await page.locator('.line-content mark').filter({ hasText: 'trace=abc' }).count(), 0);
+    await context('INFO');
+    await page.getByRole('menuitem', { name: '仅显示包含该字符串的行' }).click();
+    await page.locator('.filter-bar').waitFor({ timeout: 15000 });
+    const infoCount = Number((await page.locator('.filter-bar').innerText()).match(/([\d,]+) 个匹配行/)[1].replaceAll(',', ''));
+    assert.ok(infoCount > 10000);
+    await page.getByRole('button', { name: '末尾', exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].every(e => e.textContent.includes('INFO')));
+    assert.ok(await page.locator('.log-row').count() < 100);
+    await page.getByRole('button', { name: '取消筛选', exact: true }).click();
+    await page.getByRole('button', { name: '末尾', exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('TARGET-42')));
+    await context('TARGET-42');
+    await page.getByRole('menuitem', { name: '仅显示包含该字符串的行' }).click();
+    await page.locator('.filter-bar').waitFor();
+    await page.waitForFunction(() => document.querySelectorAll('.log-row').length === 1 && document.querySelector('.line-content')?.textContent.includes('TARGET-42'));
+    assert.ok(Number((await page.locator('.line-number').innerText()).replace('◆ ', '')) > 10000);
+    await page.getByRole('button', { name: '取消筛选', exact: true }).click();
+    console.log('Context highlight/unhighlight and 50MB full filter passed');
+    await page.getByRole('button', { name: '末尾', exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('TARGET-42')));
+    await page.getByLabel('正则', { exact: true }).check();
+    await context('TARGET-42'); await page.keyboard.press('Escape'); await page.keyboard.press('Control+f');
+    assert.equal(await page.getByPlaceholder('搜索全文关键词或正则表达式…').inputValue(), 'TARGET-42');
+    assert.equal(await page.getByLabel('正则', { exact: true }).isChecked(), false);
+    await page.locator('.result').filter({ hasText: 'TARGET-42' }).waitFor({ timeout: 15000 });
+    assert.equal(await page.locator('.result').count(), 1);
+    assert.equal(await page.locator('.right-panel').count(), 0);
+    assert.ok(await page.locator('.bottom-panel .result').count() > 0);
+    const layout = await page.evaluate(() => ({ log: document.querySelector('.log-viewport').getBoundingClientRect().bottom, results: document.querySelector('.bottom-panel').getBoundingClientRect().top, rowHeight: document.querySelector('.result').getBoundingClientRect().height }));
+    assert.ok(layout.results >= layout.log - 1); assert.equal(layout.rowHeight, 28);
+    await page.getByRole('button', { name: '收起结果面板', exact: true }).click();
+    await page.getByRole('button', { name: '展开结果面板', exact: true }).click();
+    await page.locator('.result').click();
+    await page.locator('.log-row').filter({ hasText: 'TARGET-42' }).locator('.line-number').click();
+    await page.getByPlaceholder('添加备注…').fill('测试标注');
+    await page.getByRole('button', { name: '保存标注', exact: true }).click();
+    await page.locator('.bookmark').filter({ hasText: '测试标注' }).waitFor();
+    await page.getByRole('button', { name: '首行', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.line-number')?.textContent.trim() === '1');
+    await page.locator('.log-viewport').hover(); await page.mouse.wheel(0, 2200);
+    await page.waitForFunction(() => Number(document.querySelector('.line-number')?.textContent.trim()) > 20);
+    assert.ok(await page.locator('.log-row').count() < 100);
+    await page.locator('.file-actions').getByRole('button', { name: '下载', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.task-card')?.textContent.includes('下载 · 完成'), { timeout: 30000 });
+    const hash = async file => crypto.createHash('sha256').update(await fs.readFile(file)).digest('hex');
+    assert.equal(await hash(log), await hash(path.join(temporary, 'downloads', (await fs.readdir(path.join(temporary, 'downloads'))).find(name => name.endsWith('__large.log')))));
+    await page.locator('.file-entry').filter({ hasText: 'small.log.gz' }).click();
+    await page.locator('.file-actions').getByRole('button', { name: '解压', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.task-card')?.textContent.includes('解压 · 完成'), { timeout: 15000 });
+    const extracted = (await fs.readdir(path.join(temporary, 'extracted'))).find(name => name.includes('__small.log-extracted-'));
+    assert.equal(await fs.readFile(path.join(temporary, 'extracted', extracted, 'small.log'), 'utf8'), 'INFO 中文压缩日志\nERROR compressed-marker\n');
+    await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('/small.log') && document.querySelector('.document-bar')?.textContent.includes('2 行'));
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('compressed-marker')));
+    console.log('Default download directory, hash verification, default extraction and automatic log open passed');
+    await page.locator('.file-entry').filter({ hasText: 'small.log.gz' }).dblclick();
+    await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('small.log.gz') && document.querySelector('.document-bar')?.textContent.includes('2 行'));
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('compressed-marker')));
+    await page.locator('.file-entry').filter({ hasText: 'large.log' }).dblclick();
+    await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('large.log') && document.querySelector('.document-bar')?.textContent.includes('行'), null, { timeout: 30000 });
+    await page.getByLabel('实时跟随').check();
+    await fs.appendFile(log, 'WARN live-append-marker\n');
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('live-append-marker')), { timeout: 15000 });
+    await page.getByLabel('实时跟随').uncheck();
+    await page.locator('.file-entry').filter({ hasText: 'evil.log' }).dblclick();
+    await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('evil.log') && document.querySelector('.document-bar')?.textContent.includes('1 行'));
+    await page.getByPlaceholder('搜索全文关键词或正则表达式…').fill('(a+)+$');
+    await page.getByLabel('正则', { exact: true }).check();
+    await page.getByRole('button', { name: '搜索全文', exact: true }).click();
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.status-bar')?.textContent.includes('搜索已取消'));
+    const settings = await fs.readFile(path.join(temporary, 'config/settings.json'), 'utf8');
+    assert.ok(!settings.includes('fixture-password')); assert.ok(settings.includes('测试标注'));
+    assert.deepEqual(errors, []);
+    await fs.mkdir(path.resolve(__dirname, '../docs'), { recursive: true });
+    await page.getByRole('button', { name: '打开本地日志', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('large.log') && document.querySelector('.document-bar')?.textContent.includes('行'));
+    await page.getByPlaceholder('搜索全文关键词或正则表达式…').fill('TARGET-42');
+    await page.getByLabel('正则', { exact: true }).uncheck();
+    await page.getByRole('button', { name: '搜索全文', exact: true }).click();
+    await page.locator('.result').filter({ hasText: 'TARGET-42' }).waitFor();
+    await page.locator('.result').filter({ hasText: 'TARGET-42' }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.line-content')].some(e => e.textContent.includes('TARGET-42')));
+    await context('TARGET-42');
+    await page.keyboard.press('Escape');
+    await page.screenshot({ path: path.resolve(__dirname, '../docs/screenshot.png') });
+    await page.keyboard.press('Escape');
+    const encrypted = await fs.readFile(path.join(temporary, 'config/credentials.json'), 'utf8');
+    assert.ok(!encrypted.includes('fixture-password'));
+    await application.evaluate(({ dialog }, temp) => {
+      dialog.showOpenDialog = async (_win, options) => ({ canceled: false, filePaths: [temp + (options.title.includes('下载') ? '/picked-downloads' : '/picked-extracted')] });
+    }, temporary);
+    await page.getByRole('button', { name: '目录设置', exact: true }).click();
+    await page.getByRole('button', { name: '选择目录', exact: true }).nth(0).click();
+    await page.waitForFunction(() => document.querySelector('input[aria-label="默认下载目录"]')?.value.endsWith('/picked-downloads'));
+    await page.getByRole('button', { name: '选择目录', exact: true }).nth(1).click();
+    await page.waitForFunction(() => document.querySelector('input[aria-label="默认解压目录"]')?.value.endsWith('/picked-extracted'));
+    await page.getByRole('button', { name: '关闭目录设置', exact: true }).click();
+    await application.close(); application = null;
+    application = await electron.launch({ ...(process.env.VIEWER_TEST_EXECUTABLE ? { executablePath: process.env.VIEWER_TEST_EXECUTABLE, args: [] } : { args: ['.'] }), cwd: path.resolve(__dirname, '..'), env: { ...process.env, VIEWER_DATA_DIR: path.join(temporary, 'config') }, timeout: 30000 });
+    const restored = await application.firstWindow();
+    await restored.waitForFunction(() => document.querySelector('input[type=password]')?.value === 'fixture-password');
+    const restoredDirectories = await restored.evaluate(async () => (await window.viewer.settings()).directories);
+    assert.equal(restoredDirectories.download, path.join(temporary, 'picked-downloads'));
+    assert.equal(restoredDirectories.extract, path.join(temporary, 'picked-extracted'));
+
+    assert.equal(await restored.getByLabel('已保存连接', { exact: true }).inputValue(), '127.0.0.1');
+    await restored.getByLabel('连接名称', { exact: true }).fill('second');
+    await restored.getByLabel('密码', { exact: true }).fill('second-password');
+    assert.equal(await restored.getByLabel('密码', { exact: true }).inputValue(), 'second-password');
+    await restored.getByRole('button', { name: '保存配置', exact: true }).click();
+    await restored.waitForFunction(() => document.querySelector('select[aria-label=已保存连接]')?.value === 'second');
+    await restored.getByLabel('已保存连接', { exact: true }).selectOption('127.0.0.1');
+    await restored.waitForFunction(() => document.querySelector('input[type=password]')?.value === 'fixture-password');
+    await restored.getByRole('button', { name: '连接', exact: true }).click();
+    await restored.locator('.connection-pill.connected').waitFor({ timeout: 20000 });
+    assert.equal(await restored.getByLabel('已保存连接', { exact: true }).inputValue(), '127.0.0.1');
+    await restored.getByLabel('保存密码', { exact: true }).uncheck();
+    await restored.getByRole('button', { name: '保存配置', exact: true }).click();
+    await restored.waitForFunction(async () => !(await window.viewer.loadProfile('127.0.0.1')).hasPassword);
+    assert.equal(await restored.evaluate(async () => (await window.viewer.loadProfile('127.0.0.1')).password), '');
+    assert.equal(await restored.evaluate(async () => (await window.viewer.loadProfile('second')).password), 'second-password');
+    console.log('Encrypted password restart/autofill, current selection, reconnect and credential deletion passed');
+    console.log(`Desktop integration passed: SSH/SFTP 50MB cache (${((cachedAt-started)/1000).toFixed(1)}s including startup), virtual scroll, search, bookmarks, download hash, gzip extraction/view, live follow, regex cancellation, local open; ${((Date.now()-started)/1000).toFixed(1)}s total.`);
+  } catch (error) {
+    if (application) {
+      const page = await application.firstWindow();
+      console.error((await page.locator('body').innerText()).slice(-6000));
+      await page.screenshot({ path: path.resolve(__dirname, '../desktop-failure.png') });
+    }
+    throw error;
+  } finally {
+    if (application) await application.close();
+    if (server) await server.close();
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });
