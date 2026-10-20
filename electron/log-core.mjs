@@ -25,13 +25,25 @@ export async function buildIndex(file, progress = () => {}) {
 
 export async function* readLines(file, start = 0, end, literal) {
   let parts = [], length = 0, total = 0, offset = start;
-  let decoder = new StringDecoder('utf8'), carry = '', matched = false;
-  const needle = literal ? (literal.caseSensitive ? literal.query : literal.query.toLocaleLowerCase()) : '';
+  const query = literal ? (literal.caseSensitive ? literal.query : literal.query.toLocaleLowerCase()) : '';
+  const needles = literal?.wildcard ? query.split('*').filter(Boolean) : [query];
+  let needleIndex = 0;
+  let decoder = new StringDecoder('utf8'), carry = '', matched = Boolean(literal && !needles.length);
   function match(text) {
     if (!literal || matched) return;
     const segment = carry + (literal.caseSensitive ? text : text.toLocaleLowerCase());
-    matched = segment.includes(needle);
-    carry = segment.slice(-Math.max(1, needle.length));
+    let from = 0;
+    while (needleIndex < needles.length) {
+      const needle = needles[needleIndex];
+      const at = segment.indexOf(needle, from);
+      if (at < 0) {
+        const keep = needle.length - 1;
+        carry = keep > 0 ? segment.slice(from).slice(-keep) : '';
+        return;
+      }
+      from = at + needle.length; needleIndex++;
+    }
+    matched = true; carry = '';
   }
   const stream = createReadStream(file, { start, ...(end === undefined ? {} : { end }), highWaterMark: 256 * 1024 });
   function collect(part) {
@@ -47,7 +59,7 @@ export async function* readLines(file, start = 0, end, literal) {
     const text = Buffer.concat(parts, length).toString('utf8').replace(/\r$/, '');
     const row = { text, offset, truncated: total > MAX_LINE_BYTES, matched };
     offset += total + 1; parts = []; length = 0; total = 0;
-    decoder = new StringDecoder('utf8'); carry = ''; matched = false;
+    decoder = new StringDecoder('utf8'); carry = ''; needleIndex = 0; matched = Boolean(literal && !needles.length);
     return row;
   }
   for await (const chunk of stream) {
@@ -58,6 +70,43 @@ export async function* readLines(file, start = 0, end, literal) {
     collect(chunk.subarray(from));
   }
   if (total) yield emit();
+}
+
+export async function* readFullLine(file, offset) {
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('日志行偏移无效');
+  const handle = await open(file, 'r');
+  const buffer = Buffer.alloc(256 * 1024);
+  const decoder = new StringDecoder('utf8');
+  let position = offset, pendingCR = false, ended = false;
+  try {
+    while (!ended) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (!bytesRead) break;
+      position += bytesRead;
+      let part = buffer.subarray(0, bytesRead);
+      if (pendingCR) {
+        if (part[0] === 10) { yield decoder.end(); return; }
+        const text = decoder.write(Buffer.from('\r'));
+        if (text) yield text;
+        pendingCR = false;
+      }
+      const newline = part.indexOf(10);
+      if (newline >= 0) {
+        part = part.subarray(0, newline);
+        if (part.at(-1) === 13) part = part.subarray(0, -1);
+        ended = true;
+      } else if (part.at(-1) === 13) {
+        part = part.subarray(0, -1);
+        pendingCR = true;
+      }
+      const text = decoder.write(part);
+      if (text) yield text;
+    }
+    const text = decoder.end();
+    if (text) yield text;
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function readPage(file, index, start, count = 300) {
@@ -79,9 +128,15 @@ export async function searchFile(file, query, options = {}, progress = () => {})
   const regex = options.regex ? new RegExp(query, options.caseSensitive ? '' : 'i') : null;
   const matches = []; let line = 0, count = 0, truncatedLines = 0, lastProgress = 0;
   let positions = options.collectPositions ? new Float64Array(2048) : null;
-  let positionCount = 0;
+  let positionCount = 0, sentMatches = 0;
+  let lastBytes = 0;
+  const report = bytes => {
+    const delta = matches.slice(sentMatches); sentMatches = matches.length;
+    progress({ bytes, size, count, truncatedLines, capped: count > matches.length, ...(!options.collectPositions ? { matches: delta } : {}) });
+    lastProgress = Date.now();
+  };
   const size = (await stat(file)).size;
-  for await (const row of readLines(file, 0, undefined, regex ? undefined : { query, caseSensitive: options.caseSensitive })) {
+  for await (const row of readLines(file, 0, undefined, regex ? undefined : { query, caseSensitive: options.caseSensitive, wildcard: !options.collectPositions && query.includes('*') })) {
     if (row.truncated && regex) truncatedLines++;
     const matched = regex ? regex.test(row.text) : row.matched;
     if (matched) {
@@ -96,9 +151,11 @@ export async function searchFile(file, query, options = {}, progress = () => {})
       }
       if (matches.length < 10000) matches.push({ line, text: row.text.slice(0, 800), offset: row.offset });
     }
-    line++;
-    if (Date.now() - lastProgress > 150) { progress({ bytes: row.offset, size, count }); lastProgress = Date.now(); }
+    line++; lastBytes = row.offset;
+    if ((matches.length === 1 && sentMatches === 0 && !options.collectPositions) || Date.now() - lastProgress > 100) report(row.offset);
   }
+  if (!options.collectPositions && sentMatches < matches.length) report(size);
+  else if (lastBytes < size) report(size);
   return { matches, count, capped: count > matches.length, truncatedLines, ...(positions ? { positions: positions.slice(0, positionCount * 2) } : {}) };
 }
 

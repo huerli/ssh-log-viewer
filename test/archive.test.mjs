@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, access, mkdir, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { gzipSync, crc32 } from 'node:zlib';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const tar = require('tar-stream');
-const { extractArchive, safePath } = require('../electron/archive.cjs');
+const { extractArchive, extractLocalArchive, safePath } = require('../electron/archive.cjs');
 
 function zipFile(name, data) {
   const filename = Buffer.from(name); const contents = Buffer.from(data); const crc = crc32(contents);
@@ -64,4 +64,48 @@ test('cancelled extraction removes incomplete outputs', async () => {
     await assert.rejects(extractArchive(source, target, controller.signal));
     await assert.rejects(access(target));
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('local extraction groups archives by source folder, preserves filenames and avoids overwrites', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'viewer-local-names-'));
+  try {
+    const sourceFolder = path.join(root, 'input', 'server log');
+    const output = path.join(root, 'output');
+    await mkdir(sourceFolder, { recursive: true });
+    const source = path.join(sourceFolder, 'signal.2026-10-15.372.log.gz');
+    await writeFile(source, gzipSync('本地日志\n'));
+    const first = await extractLocalArchive(source, output, new AbortController().signal);
+    const group = path.join(output, 'server log');
+    assert.equal(first.destination, group);
+    assert.equal(first.paths[0], path.join(first.destination, 'signal.2026-10-15.372.log'));
+    await writeFile(first.paths[0], 'existing content');
+    const second = await extractLocalArchive(source, output, new AbortController().signal);
+    assert.equal(second.destination, first.destination);
+    assert.equal(path.basename(second.paths[0]), 'signal.2026-10-15.372 (2).log');
+    assert.equal(await readFile(first.paths[0], 'utf8'), 'existing content');
+    assert.equal(await readFile(second.paths[0], 'utf8'), '本地日志\n');
+    const zip = path.join(sourceFolder, '日志.zip');
+    await writeFile(zip, zipFile('nested/original.log', 'archive content'));
+    const zipped = await extractLocalArchive(zip, output, new AbortController().signal);
+    assert.equal(zipped.destination, group);
+    assert.equal(zipped.paths[0], path.join(group, 'nested', 'original.log'));
+    const tar = path.join(sourceFolder, 'bundle.tar.gz');
+    await writeFile(tar, gzipSync(await tarFile('inside.log', 'tar content')));
+    const tarred = await extractLocalArchive(tar, output, new AbortController().signal);
+    assert.equal(tarred.destination, group);
+    assert.equal(path.basename(tarred.paths[0]), 'inside.log');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('local grouped extraction rejects existing linked subdirectories', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'viewer-local-links-'));
+  try {
+    const input = path.join(root, 'server log'), output = path.join(root, 'output');
+    await mkdir(input); await mkdir(path.join(output, 'server log'), { recursive: true });
+    await symlink(input, path.join(output, 'server log', 'nested'));
+    const source = path.join(input, 'logs.zip');
+    await writeFile(source, zipFile('nested/escaped.log', 'must not escape'));
+    await assert.rejects(extractLocalArchive(source, output, new AbortController().signal), /不是普通目录/);
+    await assert.rejects(access(path.join(input, 'escaped.log')));
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

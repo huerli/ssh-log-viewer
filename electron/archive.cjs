@@ -83,4 +83,45 @@ async function extractArchive(source, destination, signal, progress = () => {}, 
     throw error;
   }
 }
-module.exports = { safePath, extractArchive };
+async function extractLocalArchive(source, root, signal, progress = () => {}) {
+  const group = path.basename(path.dirname(path.resolve(source))) || 'local';
+  const destination = path.join(root, group);
+  await fsp.mkdir(root, { recursive: true, mode: 0o700 });
+  async function directory(target) {
+    try { await fsp.mkdir(target, { mode: 0o700 }); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const attrs = await fsp.lstat(target);
+    if (!attrs.isDirectory() || attrs.isSymbolicLink()) throw new Error(`解压目标不是普通目录: ${target}`);
+  }
+  await directory(destination);
+  const staging = await fsp.mkdtemp(path.join(root, '.local-extract-'));
+  const published = [];
+  try {
+    const unpacked = path.join(staging, 'content');
+    const result = await extractArchive(source, unpacked, signal, progress);
+    for (const file of result.paths) {
+      if (signal.aborted) throw new Error('操作已取消');
+      const relative = path.relative(unpacked, file);
+      let parent = destination;
+      for (const part of relative.split(path.sep).slice(0, -1)) {
+        parent = path.join(parent, part); await directory(parent);
+      }
+      const original = path.basename(file), parsed = path.parse(original);
+      let stem = parsed.name;
+      while (Buffer.byteLength(stem + parsed.ext) > 240) stem = [...stem].slice(0, -1).join('');
+      let target;
+      for (let index = 1; index <= 10000; index++) {
+        if (signal.aborted) throw new Error('操作已取消');
+        target = path.join(parent, index === 1 ? original : `${stem} (${index})${parsed.ext}`);
+        try { await fsp.link(file, target); published.push(target); break; }
+        catch (error) { if (error.code !== 'EEXIST') throw error; target = undefined; }
+      }
+      if (!target) throw new Error('同名文件过多，请更换解压目录');
+    }
+    return { ...result, destination, paths: published };
+  } catch (error) {
+    await Promise.allSettled(published.map(file => fsp.unlink(file)));
+    throw error;
+  } finally { await fsp.rm(staging, { recursive: true, force: true }); }
+}
+module.exports = { safePath, extractArchive, extractLocalArchive };

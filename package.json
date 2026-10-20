@@ -17,6 +17,11 @@
     "test:jump-auth": "node test/jump-auth.cjs",
     "pack": "tsc --noEmit && vite build && electron-builder --dir",
     "test:font": "node test/font-settings.cjs",
+    "test:copy-result": "node test/copy-search-result.cjs",
+    "test:export": "node test/search-export.cjs",
+    "test:priority": "node test/search-priority.cjs",
+    "test:stream": "node test/stream-search.cjs",
+    "test:history": "node test/search-history.cjs",
     "test:folder": "node test/local-folder.cjs",
     "test:host-conflict": "node test/host-conflict.cjs",
     "test:download-origin": "node test/download-origin.cjs"
