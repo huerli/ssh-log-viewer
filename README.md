@@ -13,7 +13,7 @@ cd ssh-log-viewer
 
 `start.sh` 优先使用系统 Node.js；当前机器未安装系统 Node 时，会使用 Codex 已有的 Node 运行时。
 
-启动脚本每次启动会重新构建当前界面，避免继续使用旧的 `dist`。窗口标题及左上角显示版本号（当前为 `v0.0.1`）；更新代码后需要重启旧窗口，已运行的窗口不会自动更新。界面和后台版本不一致时会提示重启。
+启动脚本每次启动会重新构建当前界面，避免继续使用旧的 `dist`。窗口标题及左上角显示版本号（当前为 `v0.0.2`）；更新代码后需要重启旧窗口，已运行的窗口不会自动更新。界面和后台版本不一致时会提示重启。
 
 Linux 下若 Electron 的 `chrome-sandbox` 没有配置 root 所有权及 SUID 权限，启动器与应用会跳过此助手，使用 Chromium 用户命名空间沙箱。当前机器已验证支持，不需要修改系统文件权限。参见 [Chromium Linux 沙箱说明](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux/sandboxing.md)。
 
