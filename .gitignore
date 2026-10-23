@@ -3,3 +3,4 @@ dist/
 release/
 *.log
 desktop-failure.png
+artifacts/

@@ -18,6 +18,10 @@ function sourceIdentity(profile) {
   if (Buffer.byteLength(tag) > 96) tag = fit(tag, 85) + '--' + crypto.createHash('sha256').update(label + endpoint + via).digest('hex').slice(0, 8);
   return { tag, label: `${label ? profile.name + ' · ' : ''}${profile.username}@${profile.host}:${Number(profile.port || 22)}${profile.jump?.enabled ? `（经 ${profile.jump.username}@${profile.jump.host}:${Number(profile.jump.port || 22)}）` : ''}` };
 }
+function archiveOwner(profile) {
+  if (!profile.jump?.enabled) return profile.host;
+  return profile.jumpName || profile.jump.name || profile.jump.host;
+}
 function sourceFilename(tag, originalName, suffix = '') {
   const original = clean(path.posix.basename(originalName));
   const extension = original.match(/\.tar\.gz$/i)?.[0] || path.posix.extname(original);
@@ -42,4 +46,4 @@ function extractionPath(root, host, remote, date = new Date()) {
   const folder = fit(name, 240);
   return path.join(path.dirname(archive), !folder || folder === '.' || folder === '..' ? 'archive' : folder);
 }
-module.exports = { sourceIdentity, sourceFilename, downloadPath, extractionPath };
+module.exports = { sourceIdentity, sourceFilename, downloadPath, extractionPath, archiveOwner };

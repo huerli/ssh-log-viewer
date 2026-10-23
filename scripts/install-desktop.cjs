@@ -3,6 +3,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 if (process.platform === 'linux') {
+  // Keep the package-managed launcher authoritative when a deb is installed.
+  if (fs.existsSync('/usr/share/applications/com.teee.sshlogviewer.desktop')) return;
   const root = path.resolve(__dirname, '..');
   const applications = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'applications');
   // Desktop Entry escaping differs from shell quoting; Exec also treats % as field codes.

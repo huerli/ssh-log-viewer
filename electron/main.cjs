@@ -14,7 +14,7 @@ const { writeSearchExport } = require('./search-export.cjs');
 const { extractArchive, extractLocalArchive } = require('./archive.cjs');
 const { remoteSource } = require('./remote-source.cjs');
 const { CredentialStore, credentialId } = require('./credentials.cjs');
-const { sourceIdentity, downloadPath, extractionPath } = require('./source-names.cjs');
+const { sourceIdentity, downloadPath, extractionPath, archiveOwner } = require('./source-names.cjs');
 
 if (process.platform === 'linux') {
   app.setDesktopName('com.teee.sshlogviewer.desktop');
@@ -143,7 +143,7 @@ async function connect(profile) {
     if (controller.signal.aborted) throw new Error('连接已取消');
     sshSession = own; connection = own.client; sftp = own.sftp;
     connectionName = `${profile.username}@${own.identity}`;
-    connectionOrigin = { ...sourceIdentity(profile), host: profile.host, owner: connectionName };
+    connectionOrigin = { ...sourceIdentity(profile), host: archiveOwner(profile), owner: connectionName };
     const home = await callSftp('realpath', '.');
     if (controller.signal.aborted) throw new Error('连接已取消');
     return { name: connectionName, home };
@@ -450,7 +450,14 @@ async function follow() {
 let telnetOutputFile, telnetOutputHost = '', telnetOutputQueue = Promise.resolve();
 let telnetConnectionLogQueue = Promise.resolve();
 let telnetConnectionContext = '';
-let telnetRecording = null;
+async function startTelnetOutput(target) {
+  await telnetOutputQueue;
+  telnetOutputFile = undefined;
+  telnetOutputHost = String(target).replace(/[^a-zA-Z0-9.-]/g, '_');
+  telnetOutputFile = await require('./telnet-log.cjs').createTelnetLog(config.directories.download, target);
+  extractedFiles.add(telnetOutputFile);
+  event({ type: 'local-files-changed' });
+}
 function logTelnetConnection(message) {
   const line = `${new Date().toISOString()} ${telnetConnectionContext ? `[${telnetConnectionContext}] ` : ''}${message}\n`;
   try {
@@ -464,15 +471,11 @@ function logTelnetConnection(message) {
 const telnetEmit = data => {
   if (data.type === 'telnet-status') logTelnetConnection(data.message || '状态未知');
   if (data.type === 'telnet-connection-log') logTelnetConnection(data.message || '连接诊断信息未知');
-  if (data.type === 'telnet-data' && telnetOutputFile) {
-    const file = telnetOutputFile, text = data.message;
-    telnetOutputQueue = telnetOutputQueue.then(() => fsp.appendFile(file, text, { mode: 0o600 })).catch(error => event({ type: 'telnet-status', message: '输出记录失败：' + error.message }));
-  }
-  if (data.type === 'telnet-data' && telnetRecording) {
-    const recording = telnetRecording;
+  if (data.type === 'telnet-data' && telnetOutputFile && config.telnetLogMode !== 'none') {
+    const file = telnetOutputFile;
     let text = data.message;
-    if (recording.mode === 'printable') text = require('node:util').stripVTControlCharacters(text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
-    telnetOutputQueue = telnetOutputQueue.then(() => fsp.appendFile(recording.file, text, { mode: 0o600 })).catch(error => event({ type: 'telnet-status', message: '日志写入失败：' + error.message }));
+    if ((config.telnetLogMode || 'printable') === 'printable') text = require('node:util').stripVTControlCharacters(text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+    telnetOutputQueue = telnetOutputQueue.then(() => fsp.appendFile(file, text, { mode: 0o600 })).catch(error => event({ type: 'telnet-status', message: '日志写入失败：' + error.message }));
   }
   event(data);
 };
@@ -506,10 +509,7 @@ const handlers = {
     telnetConnectionContext = `web ${address} device=${String(device).replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     logTelnetConnection('开始连接');
     telnet.close(); webTelnet.close(); webTelnetActive = true;
-    await telnetOutputQueue;
-    telnetOutputHost = String(device).replace(/[^a-zA-Z0-9.-]/g, '_');
-    telnetOutputFile = path.join(cacheRoot, 'web-telnet-' + crypto.randomUUID() + '.txt');
-    await fsp.writeFile(telnetOutputFile, '', { mode: 0o600 });
+    await startTelnetOutput(device);
     if (!token) {
       if (!webLoginSession || webLoginSession.address !== address.replace(/\/$/, '')) throw new Error('请先登录当前 Web 服务');
       token = await require('./web-telnet.cjs').getTelnetToken(address, webLoginSession);
@@ -522,11 +522,7 @@ const handlers = {
     logTelnetConnection('开始连接');
     webTelnet.close(); webTelnetActive = false;
     telnet.close();
-    await telnetOutputQueue;
-    if (telnetOutputFile) await fsp.rm(telnetOutputFile, { force: true });
-    telnetOutputFile = path.join(cacheRoot, 'telnet-' + crypto.randomUUID() + '.txt');
-    telnetOutputHost = String(host).replace(/[^a-zA-Z0-9.-]/g, '_');
-    await fsp.writeFile(telnetOutputFile, '', { mode: 0o600 });
+    await startTelnetOutput(host);
     try {
       await telnet.connect(host, port);
       // Request the device information as soon as a direct Telnet session is ready.
@@ -549,14 +545,14 @@ const handlers = {
   },
   telnetRecording: async (mode, append) => {
     if (!['none', 'printable', 'all'].includes(mode)) throw new Error('日志类型无效');
-    telnetRecording = null;
     await telnetOutputQueue;
+    config.telnetLogMode = mode;
+    await save();
     if (mode === 'none') return null;
-    const chosen = await dialog.showSaveDialog(win, { title: '选择持续记录日志文件', defaultPath: path.join(app.getPath('downloads'), 'telnet-' + telnetOutputHost + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.log') });
-    if (chosen.canceled || !chosen.filePath) return null;
-    await fsp.writeFile(chosen.filePath, '', { flag: append ? 'a' : 'w', mode: 0o600 });
-    telnetRecording = { mode, file: chosen.filePath };
-    return chosen.filePath;
+    // Applying overwrite only clears the current session, never older sessions.
+    if (telnetOutputFile && !append) await fsp.writeFile(telnetOutputFile, '', { mode: 0o600 });
+    event({ type: 'local-files-changed' });
+    return telnetOutputFile || null;
   },
   telnetWrite: text => webTelnetActive ? webTelnet.write(text) : telnet.write(text),
   telnetClose: () => { telnet.close(); webTelnet.close(); },
@@ -586,12 +582,20 @@ const handlers = {
     }
     return existing.sort((a, b) => a.localeCompare(b));
   },
-  settings: () => ({ searchHistory: config.searchHistory, profiles: config.profiles, bookmarks: config.bookmarks, theme: config.theme, logFont: config.logFont, version: app.getVersion(), selectedProfile: config.lastProfileName, directories: config.directories, jumpProfiles: config.jumpProfiles, selectedJump: config.lastJumpName, localPaths: config.lastLocalPaths || [] }),
+  settings: () => ({ telnetLogMode: config.telnetLogMode || 'printable', searchHistory: config.searchHistory, profiles: config.profiles, bookmarks: config.bookmarks, theme: config.theme, logFont: config.logFont, version: app.getVersion(), selectedProfile: config.lastProfileName, directories: config.directories, jumpProfiles: config.jumpProfiles, selectedJump: config.lastJumpName, localPaths: config.lastLocalPaths || [] }),
   loadProfile: async name => {
     const profile = config.profiles.find(p => p.name === name);
     if (!profile) throw new Error('连接配置不存在');
     config.lastProfileName = name; await save();
     return { ...await namedJump(profile), password: profile.hasPassword ? await credentials.get(profile.credentialId || credentialId(profile)) : '', ...(!profile.jumpName && profile.jump ? { jump: { ...profile.jump, password: profile.jump.hasPassword ? await credentials.get(profile.jump.credentialId) : '' } } : {}) };
+  },
+  importServerAsJump: async name => {
+    const saved = config.profiles.find(item => item.name === name);
+    if (!saved) throw new Error('服务器配置不存在');
+    return { name: saved.name, host: saved.host, port: saved.port, username: saved.username,
+      auth: saved.auth, keyPath: saved.keyPath || '', enabled: true,
+      rememberPassword: Boolean(saved.rememberPassword), hasPassword: Boolean(saved.hasPassword),
+      password: saved.hasPassword ? await credentials.get(saved.credentialId || credentialId(saved)) : '' };
   },
   loadJumpProfile: async name => {
     const saved = config.jumpProfiles.find(item => item.name === name);
@@ -683,7 +687,7 @@ const handlers = {
   saveProfile: async profile => {
     profile = await namedJump(profile);
     const saved = { name: String(profile.name || profile.host), host: String(profile.host), port: Number(profile.port || 22), username: String(profile.username), auth: profile.auth, keyPath: String(profile.keyPath || ''), rememberPassword: Boolean(profile.rememberPassword), hasPassword: false };
-    if (profile.jump) saved.jump = { enabled: Boolean(profile.jump.enabled), host: String(profile.jump.host || ''), port: Number(profile.jump.port || 22), username: String(profile.jump.username || ''), auth: profile.jump.auth || 'password', keyPath: String(profile.jump.keyPath || ''), rememberPassword: Boolean(profile.jump.rememberPassword), hasPassword: false };
+    if (profile.jump) saved.jump = { name: String(profile.jump.name || ''), enabled: Boolean(profile.jump.enabled), host: String(profile.jump.host || ''), port: Number(profile.jump.port || 22), username: String(profile.jump.username || ''), auth: profile.jump.auth || 'password', keyPath: String(profile.jump.keyPath || ''), rememberPassword: Boolean(profile.jump.rememberPassword), hasPassword: false };
     if (profile.jumpName) saved.jumpName = String(profile.jumpName);
     const id = credentialId(saved), previous = config.profiles.find(p => p.name === saved.name);
     if (previous?.credentialId && previous.credentialId !== id) await credentials.set(previous.credentialId, null);
@@ -1066,5 +1070,5 @@ app.on('before-quit', e => {
   telnet.close();
   if (quitting) return;
   e.preventDefault(); quitting = true; disconnect();
-  Promise.allSettled([saveQueue, credentials?.queue]).then(() => saveQueue).finally(() => fsp.rm(cacheRoot, { recursive: true, force: true })).finally(() => app.quit());
+  Promise.allSettled([saveQueue, credentials?.queue, telnetOutputQueue, telnetConnectionLogQueue]).then(() => saveQueue).finally(() => fsp.rm(cacheRoot, { recursive: true, force: true })).finally(() => app.quit());
 });

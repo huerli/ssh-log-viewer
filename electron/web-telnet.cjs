@@ -11,6 +11,12 @@ function normalizeWebAddress(value) {
   if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password || url.search || url.hash) throw new Error('Web 服务地址须为 HTTP(S) 地址，不能包含账号、查询参数或片段');
   return url.href.replace(/\/$/, '');
 }
+function normalizeWebInput(text) {
+  if (text === '\x03') return text;
+  let command = text.replace(/[\r\n]+$/, '').trim();
+  if (command && !/^(?:send|help|history|quit)(?:\s|$)/i.test(command)) command = 'send ' + command;
+  return command + '\r\n';
+}
 function createWebTelnet(emit) {
   let socket, retryTimer, cancelPending;
   const close = () => {
@@ -58,9 +64,9 @@ function createWebTelnet(emit) {
     write(text) {
       if (!socket?.connected) throw new Error('Web Telnet 未连接');
       if (typeof text !== 'string') throw new Error('命令格式无效');
-      const raw = Buffer.from(text);
+      const raw = Buffer.from(normalizeWebInput(text));
       if (raw.length > 117) throw new Error('Web Telnet 单次输入最多 117 字节');
-      socket.volatile.emit('userInput', crypto.publicEncrypt({ key: publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, raw).toString('base64'));
+      socket.emit('userInput', crypto.publicEncrypt({ key: publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, raw).toString('base64'));
     }
   };
 }
@@ -182,4 +188,4 @@ async function searchDevices(address, login, keyword) {
   return (await cached.promise).filter(item => item.number.toLowerCase().includes(query) || item.name.toLowerCase().includes(query)).slice(0, 50);
 }
 
-module.exports = { createWebTelnet, webLogin, getTelnetToken, normalizeWebAddress, searchDevices };
+module.exports = { createWebTelnet, webLogin, getTelnetToken, normalizeWebAddress, searchDevices, normalizeWebInput };

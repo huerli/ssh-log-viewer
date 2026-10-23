@@ -24,7 +24,7 @@ declare global {
       telnetWrite(text: string): Promise<void>;
       telnetClose(): Promise<void>;
       downloadedFiles(): Promise<string[]>;
-      settings(): Promise<{ searchHistory?: string[]; profiles: Profile[]; theme?: string; logFont?: LogFont; version?: string; selectedProfile?: string; directories: { download: string; extract: string }; jumpProfiles: JumpProfile[]; selectedJump?: string; localPaths?: string[] }>;
+      settings(): Promise<{ telnetLogMode?: string; searchHistory?: string[]; profiles: Profile[]; theme?: string; logFont?: LogFont; version?: string; selectedProfile?: string; directories: { download: string; extract: string }; jumpProfiles: JumpProfile[]; selectedJump?: string; localPaths?: string[] }>;
       openFolder(path: string): Promise<void>;
       exportSearchResults(data: SearchResult & { query: string; file?: string; regex: boolean; caseSensitive: boolean; partial: boolean }): Promise<{ path: string; count: number } | null>;
       copyText(text: string): Promise<void>;
@@ -34,6 +34,7 @@ declare global {
       deleteProfile(name: string): Promise<Profile[] | null>;
       deleteJumpProfile(name: string): Promise<{ profiles: Profile[]; jumpProfiles: JumpProfile[] } | null>;
       saveProfile(profile: Profile): Promise<Profile[]>;
+      importServerAsJump(name: string): Promise<JumpProfile>;
       loadJumpProfile(name: string): Promise<JumpProfile>;
       saveJumpProfile(profile: JumpProfile): Promise<JumpProfile[]>;
       loadProfile(name: string): Promise<Profile>;

@@ -404,3 +404,77 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .device-search-results button { text-align: left; overflow-wrap: anywhere; display: flex; align-items: center; gap: 5px; }
 .device-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: #9ca3af; }
 .device-status-dot.online { background: #16a34a; }
+
+/* Application preferences */
+.app-settings{width:min(860px,94vw);max-height:90vh;overflow:auto;padding:0;border-radius:16px}
+.app-settings .settings-heading{padding:24px 28px;margin:0;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel);z-index:1}
+.settings-heading strong{display:block;font-size:20px;line-height:1.4}
+.settings-heading small{display:block;font-size:12px;font-weight:400;color:var(--muted);margin-top:5px}
+.settings-heading>button{width:32px;height:32px;padding:0;font-size:20px}
+.settings-grid{padding:24px 28px;display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+.settings-card{border:1px solid var(--border);border-radius:12px;padding:20px;min-width:0}
+.settings-card h3{font-size:14px;margin:0 0 6px;font-weight:650}
+.settings-card>p{font-size:12px;color:var(--muted);margin:0 0 18px;line-height:1.6}
+.settings-card>label{display:flex;flex-direction:column;gap:8px;font-size:12px;margin-top:16px;color:var(--text)}
+.settings-card input,.settings-card select{width:100%;min-width:0;height:36px;border-radius:7px}
+.settings-card .theme-picker{flex-direction:row;align-items:center;margin-top:16px;gap:10px}
+.settings-card small{display:block;color:var(--muted);line-height:1.6;margin-top:12px}
+.settings-card .inline{display:flex;gap:8px;margin-top:0}
+.settings-card .inline input{flex:1;width:0}
+.settings-card .inline button{flex-shrink:0}
+.settings-card #telnet-settings-slot{flex-direction:column;align-items:stretch;gap:10px;margin-top:16px}
+#telnet-settings-slot button{min-height:38px;text-align:left;padding:9px 12px;border-radius:8px}
+.settings-storage{grid-column:1 / -1}
+.settings-card .hint{margin:14px 0 0;font-size:11px}
+.settings-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 28px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}
+.settings-footer button{min-width:86px}
+.directory-settings{max-height:90vh;overflow:auto}
+@media(max-width:680px){.settings-grid{grid-template-columns:1fr;padding:16px;gap:12px}.settings-storage{grid-column:auto}.app-settings .settings-heading,.settings-footer{padding:16px}.settings-card{padding:16px}}
+.settings-shortcuts{grid-column:1 / -1;display:grid;grid-template-columns:1fr 1fr;column-gap:20px}
+.settings-shortcuts h3,.settings-shortcuts>p,.settings-shortcuts>small{grid-column:1 / -1}
+.settings-shortcuts>p{margin-bottom:0}
+@media(max-width:680px){.settings-shortcuts{grid-template-columns:1fr;grid-column:auto}}
+.command-config-dialog .command-color-picker{display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap}
+.command-color-picker input[type=color]{width:34px;height:30px;padding:2px;cursor:pointer}
+.command-color-preview{padding:5px 9px;border-radius:6px}
+.command-config-dialog form.inline{flex-wrap:wrap;gap:8px}
+/* Line numbers remain clickable but are excluded from text selection. */
+.line-number{user-select:none;-webkit-user-select:none}
+.log-row.selected-line{background:color-mix(in srgb,var(--accent) 18%,var(--log));box-shadow:inset 3px 0 0 var(--accent)}
+.log-row.selected-line .line-number{background:color-mix(in srgb,var(--accent) 24%,var(--input));color:var(--text);font-weight:700}
+.jump-source-picker{padding:12px;margin:10px 0;border:1px solid var(--border);border-radius:8px;background:var(--panel)}
+.jump-source-picker label{display:flex;flex-direction:column;gap:8px;font-size:12px}
+.jump-source-picker select{width:100%;min-width:0}
+.jump-source-picker small{display:block;margin-top:8px;line-height:1.6}
+.connection-target-title{padding:12px 0 4px;font-size:12px;font-weight:600;border-top:1px solid var(--border);margin-top:12px}
+.connection-target-title small{display:block;font-weight:400;color:var(--muted);line-height:1.6;margin-top:5px}
+/* Keep the active command editor outside the scrolling command list. */
+.command-config-dialog{display:flex;flex-direction:column;gap:12px;max-height:90vh;overflow:auto}
+.command-config-dialog>.panel-title,.command-config-dialog>.command-inline-editor,.command-config-dialog>form,.command-config-dialog>.inline,.command-config-dialog>small{flex-shrink:0}
+.command-config-list{display:block;flex:1 1 200px;min-height:70px;max-height:30vh;overflow-y:auto;scrollbar-gutter:stable}
+.command-config-item{border-bottom:1px solid var(--border);padding:8px 0}
+.command-config-item .inline{flex-wrap:nowrap}
+.command-inline-editor{margin:0;padding:12px;border-radius:8px;background:var(--input)}
+.command-inline-editor>strong{display:block;font-size:12px;margin-bottom:10px}
+.command-edit-form{display:grid;grid-template-columns:minmax(120px,1fr) auto auto auto auto;align-items:end;gap:10px}
+.command-edit-form label{font-size:12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.command-text-field{grid-column:1 / -1;grid-row:1}
+.command-edit-form input:not([type=color]),.command-edit-form textarea{width:100%;min-width:0;box-sizing:border-box}
+.command-edit-form textarea{resize:vertical;min-height:62px;max-height:140px;padding:8px;font-family:var(--log-font-family,monospace);font-size:12px;color:var(--text);background:var(--panel);border:1px solid var(--border);border-radius:6px}
+@media(max-width:680px){.command-edit-form{grid-template-columns:1fr 1fr}.command-name-field{grid-column:1 / -1}.command-config-dialog{padding:14px}.command-config-list{max-height:22vh}}
+.variable-command-dialog label input{display:block;width:100%;margin-top:7px;box-sizing:border-box}
+.variable-command-preview{white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--input);font-size:12px;max-height:180px;overflow:auto}
+/* Parameterized commands have a structural cue independent of their color. */
+.command-buttons button.variable-command-button{display:inline-flex;align-items:center;gap:8px;border-style:dashed;border-width:1px;border-radius:7px;padding:4px 10px 4px 5px;min-height:31px}
+.variable-command-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 5px;border:1px solid currentColor;border-radius:4px;font-size:10px;line-height:16px;font-weight:600;white-space:nowrap}
+.variable-command-badge b{font-family:monospace;font-size:12px}
+.variable-command-indicator{font-weight:700;line-height:1;opacity:.75}
+.command-color-preview .variable-command-badge{margin-right:7px}
+.variable-history{display:flex;gap:8px;align-items:center;margin-top:8px}
+.variable-history select{flex:1;min-width:0;font-size:12px}
+.variable-history button{flex-shrink:0;font-size:12px}
+.variable-input-field{display:flex;align-items:center;margin-top:7px;background:var(--input);border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.variable-input-field:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 15%,transparent)}
+.variable-command-dialog .variable-input-field input{flex:1;min-width:0;width:0;border:0;margin:0;background:transparent;box-shadow:none;outline:none}
+.variable-input-field .clear-variable-history{flex-shrink:0;border:0;border-left:1px solid var(--border);border-radius:0;background:transparent;font-size:11px;padding:6px 10px;color:var(--muted)}
+.variable-input-field .clear-variable-history:hover:not(:disabled){color:var(--text);background:var(--hover)}

@@ -45,3 +45,15 @@ test('remote extraction paths use the same hourly hierarchy and readable archive
   assert.equal(extractionPath(root, '127.0.0.1', '/system/log/monitor.log.gz', date), path.join(root, '127.0.0.1', 'log', '2026-10-22_09', 'monitor.log'));
   assert.equal(extractionPath(root, '127.0.0.1', '/logs.tar.gz', date), path.join(root, '127.0.0.1', 'root', '2026-10-22_09', 'logs'));
 });
+
+test('jump downloads and extractions belong to the saved jump profile', () => {
+  const base = { host: '127.0.0.1', jumpName: '客户A跳板机', jump: { enabled: true, name: '旧名称', host: '10.0.0.1' } };
+  assert.equal(names.archiveOwner(base), '客户A跳板机');
+  assert.equal(names.archiveOwner({ ...base, jumpName: undefined }), '旧名称');
+  assert.equal(names.archiveOwner({ host: '127.0.0.1', jump: { enabled: true, host: '10.0.0.1' } }), '10.0.0.1');
+  assert.equal(names.archiveOwner({ ...base, jump: { enabled: false } }), '127.0.0.1');
+  const root = path.resolve('downloads');
+  const date = new Date(2026, 9, 23, 18);
+  assert.equal(downloadPath(root, names.archiveOwner(base), '/system/log/app.log', date), path.join(root, '客户A跳板机', 'log', '2026-10-23_18', 'app.log'));
+  assert.equal(extractionPath(root, names.archiveOwner(base), '/system/log/app.log.gz', date), path.join(root, '客户A跳板机', 'log', '2026-10-23_18', 'app.log'));
+});
