@@ -1,6 +1,6 @@
 {
   "name": "ssh-log-viewer",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "packageManager": "pnpm@11.25.0",
   "description": "SSH remote log viewer with disk-backed indexing",
   "private": true,
@@ -78,5 +78,9 @@
         "dmg"
       ]
     }
+  },
+  "author": {
+    "name": "huerli",
+    "email": "2556892336@qq.com"
   }
 }

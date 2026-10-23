@@ -95,6 +95,8 @@ jobs:
           actual="$(node -p "require('./package.json').version")"
           test "$actual" = "$expected"
           echo "VERSION=$expected" >> "$GITHUB_ENV"
+      - name: Build renderer for package
+        run: pnpm build
       - name: Package installer
         run: ${{ matrix.command }}
       - name: Collect installer and checksum
