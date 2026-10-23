@@ -59,7 +59,7 @@ jobs:
         include:
           - target: linux
             runner: ubuntu-24.04
-            command: pnpm exec electron-builder --linux AppImage --publish never
+            command: pnpm exec electron-builder --linux deb --publish never
           - target: windows
             runner: windows-2025
             command: pnpm exec electron-builder --win nsis --publish never
@@ -145,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           find release-assets -type f -size +0c -print
-          test "$(find release-assets -maxdepth 1 -name '*.AppImage' | wc -l)" -eq 1
+          test "$(find release-assets -maxdepth 1 -name '*.deb' | wc -l)" -eq 1
           test "$(find release-assets -maxdepth 1 -name '*.exe' | wc -l)" -eq 1
           test "$(find release-assets -maxdepth 1 -name '*.dmg' | wc -l)" -eq 1
           test "$(find release-assets -maxdepth 1 -name '*.sha256' | wc -l)" -eq 3

@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 
 const [target, version] = process.argv.slice(2);
 if (!target || !version) throw new Error('usage: node scripts/collect-release.cjs <target> <version>');
-const extension = { linux: '.AppImage', windows: '.exe', macos: '.dmg' }[target];
+const extension = { linux: '.deb', windows: '.exe', macos: '.dmg' }[target];
 if (!extension) throw new Error(`unsupported target: ${target}`);
 const releaseDir = path.resolve('release');
 const artifactDir = path.resolve('artifacts');
