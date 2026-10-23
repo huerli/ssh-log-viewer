@@ -59,13 +59,13 @@ jobs:
         include:
           - target: linux
             runner: ubuntu-24.04
-            command: pnpm exec electron-builder --linux AppImage
+            command: pnpm exec electron-builder --linux AppImage --publish never
           - target: windows
             runner: windows-2025
-            command: pnpm exec electron-builder --win nsis
+            command: pnpm exec electron-builder --win nsis --publish never
           - target: macos
             runner: macos-14
-            command: pnpm exec electron-builder --mac dmg
+            command: pnpm exec electron-builder --mac dmg --publish never
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out
