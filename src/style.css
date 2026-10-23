@@ -267,3 +267,140 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 
 @keyframes jump-highlight-pulse { 0%,100% { background: transparent; box-shadow: inset 3px 0 0 var(--accent); } 25%,75% { background: color-mix(in srgb, var(--accent) 30%, transparent); box-shadow: inset 5px 0 0 var(--accent); } 50% { background: color-mix(in srgb, var(--warning) 45%, transparent); box-shadow: inset 5px 0 0 var(--warning); } }
 .log-row.jump-highlight { animation: jump-highlight-pulse 1.8s ease-in-out 2; }
+
+.connection-actions{display:flex;align-items:center;gap:6px;margin-top:8px;flex-shrink:0}
+.connection-actions button{font-size:12px;padding:6px 10px}
+.connection-actions>.primary{flex:1}
+.connection-settings-toggle{margin-left:auto}
+.connection-settings-toggle.active{background:var(--selected);border-color:var(--accent-text);color:var(--accent-text)}
+.connection-form{padding:10px;border:1px solid var(--border);border-radius:7px;background:var(--tint);max-height:50vh;overflow:auto;flex-shrink:0}
+.connection-settings-heading{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;margin-bottom:3px}
+.connection-settings-heading span{font-size:10px;font-weight:400;color:var(--muted)}
+.connection-form .connection-mode{margin:0 0 3px;flex-wrap:wrap}
+.connection-form .connection-mode label{display:flex;gap:4px;color:var(--text)}
+.connection-form .hint{margin:0}
+.connection-form .save-connection{align-self:stretch;margin-top:3px}
+
+.connection-config-actions{display:flex;gap:6px;margin-top:3px}
+.connection-config-actions button{flex:1}
+.connection-config-actions .save-connection{margin-top:0}
+.danger-button{color:var(--danger)}
+
+.telnet-overlay { position: fixed; inset: 0; z-index: 90; background: var(--bg, #f5f7fa); }
+.telnet-page { height: 100%; padding: 20px; display: flex; flex-direction: column; gap: 16px; box-sizing: border-box; }
+.telnet-output { flex: 1; min-height: 0; overflow: auto; background: #111827; color: #e5e7eb; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px monospace; }
+
+.telnet-controls { flex-wrap: wrap; flex-shrink: 0; }
+.telnet-controls label { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.telnet-controls input.telnet-host { width: 220px; min-width: 180px; flex: none; }
+.telnet-controls input.telnet-port { width: 90px; min-width: 80px; flex: none; }
+.telnet-output { overflow: hidden; }
+
+.telnet-commands { flex-shrink: 0; display: grid; gap: 8px; max-height: 35vh; overflow: auto; }
+.telnet-commands .inline { flex-wrap: wrap; gap: 6px; }
+.command-editor { display: grid; gap: 8px; }
+
+.command-button-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border, #cbd5e1); border-radius: 4px; }
+.command-button-bar > select { width: 140px; flex: 0 0 140px; }
+.command-buttons { display: flex; align-items: center; gap: 4px; overflow-x: auto; flex: 1; min-width: 0; min-height: 30px; }
+.command-buttons button { flex-shrink: 0; white-space: nowrap; border-radius: 3px; padding: 5px 12px; }
+.command-menu-shade { position: fixed; inset: 0; z-index: 110; }
+.command-editor { padding: 12px; border: 1px solid var(--border, #cbd5e1); border-radius: 4px; }
+
+.command-config-dialog { width: min(760px, 90vw); max-height: 85vh; overflow: auto; }
+.command-config-list { display: grid; gap: 8px; max-height: 35vh; overflow: auto; }
+.command-config-list code { overflow-wrap: anywhere; min-width: 0; }
+
+.command-inline-editor { margin-top: 8px; padding: 10px; border: 1px solid var(--border, #cbd5e1); border-radius: 4px; }
+.command-config-item { padding: 6px 0; }
+
+/* Keep the terminal's last input row clear of the command toolbar. */
+.telnet-output {
+  padding-bottom: 48px;
+  box-sizing: border-box;
+}
+
+.embedded-telnet { flex: 1; min-height: 0; min-width: 0; flex-direction: column; }
+.embedded-telnet .telnet-page { flex: 1; min-height: 0; padding: 12px; gap: 10px; }
+.embedded-telnet .telnet-page > .panel-title { flex-shrink: 0; }
+.embedded-telnet .telnet-controls input.telnet-host { width: 170px; min-width: 140px; }
+
+.telnet-search { flex-shrink: 0; flex-wrap: wrap; gap: 8px; }
+.telnet-search > input { flex: 1; min-width: 180px; }
+.telnet-search label { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Size xterm inside a separate host so FitAddon cannot consume the bottom gap. */
+.telnet-output { position: relative; padding: 0; }
+.telnet-terminal-host { position: absolute; inset: 16px 16px 32px; overflow: hidden; }
+
+.log-view-section { display: flex; flex-direction: column; flex: 1; min-height: 120px; overflow: hidden; }
+.main-panel > .embedded-telnet { flex: 0 0 46%; min-height: 300px; border-top: 2px solid var(--border, #cbd5e1); overflow: hidden; }
+
+/* One shared display region, with connection controls above and commands below. */
+.unified-terminal { position: relative; padding-top: 100px; }
+.unified-terminal .embedded-telnet .telnet-page > .panel-title {
+  position: absolute; top: 4px; left: 12px; right: 12px; height: 34px;
+}
+.unified-terminal .embedded-telnet .telnet-page > .telnet-controls {
+  position: absolute; top: 42px; left: 12px; right: 12px; min-height: 42px;
+}
+.unified-terminal > .embedded-telnet { border-top: 0; min-height: 0; }
+.unified-terminal.show-telnet > .embedded-telnet { flex: 1; }
+.unified-terminal.show-log > .embedded-telnet { flex: 0 0 auto; }
+.unified-terminal.show-log .telnet-output,
+.unified-terminal.show-log .telnet-search { display: none; }
+.unified-terminal.show-log .embedded-telnet .telnet-page { height: auto; }
+.unified-terminal .telnet-commands, .unified-terminal .telnet-page > form:last-child { flex-shrink: 0; }
+@media (max-width: 1100px) {
+  .unified-terminal { padding-top: 150px; }
+  .unified-terminal .embedded-telnet .telnet-page > .telnet-controls { max-height: 100px; overflow: auto; }
+}
+
+.unified-terminal { padding-top: 0; }
+#telnet-connection-slot { flex-shrink: 0; }
+.telnet-sidebar { margin: 12px 0; padding-top: 10px; border-top: 1px solid var(--border, #cbd5e1); }
+.telnet-sidebar .telnet-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.telnet-sidebar .telnet-controls label { display: flex; width: 100%; min-width: 0; }
+.telnet-sidebar .telnet-controls input.telnet-host,
+.telnet-sidebar .telnet-controls input.telnet-port { width: 0; min-width: 0; flex: 1; }
+.telnet-sidebar .panel-title span { overflow-wrap: anywhere; max-width: 150px; font-size: 11px; }
+
+.unified-terminal.show-log .shared-telnet-display .telnet-output,
+.unified-terminal.show-log .shared-telnet-display .telnet-search { display: flex; }
+.shared-telnet-display { flex: 1; min-height: 0; flex-direction: column; }
+.shared-telnet-content { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.unified-terminal.show-telnet > .embedded-telnet { flex: 0 0 auto; }
+.unified-terminal.show-telnet .embedded-telnet .telnet-page { height: auto; }
+
+.telnet-output { background: var(--log); color: var(--text); }
+
+/* Generic inline input sizing must not collapse search option checkboxes. */
+.telnet-search label input[type="checkbox"],
+.telnet-sidebar label input[type="checkbox"] {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  appearance: auto;
+}
+.telnet-search label { cursor: pointer; white-space: nowrap; }
+
+.telnet-page > form:last-child > input { font-family: var(--log-font-family); font-size: var(--log-font-size); }
+
+.telnet-sidebar .telnet-controls label > input:not([type=checkbox]), .telnet-sidebar .telnet-controls label > select { flex: 1; min-width: 0; width: 0; }
+
+.telnet-connection-settings { max-height: 85vh; overflow: auto; }
+.telnet-connection-settings > label { display: grid; gap: 6px; }
+.telnet-connection-settings > label > input,
+.telnet-connection-settings > label > select { width: 100%; min-width: 0; box-sizing: border-box; }
+.telnet-sidebar .telnet-controls > select { width: 100%; min-width: 0; }
+
+.telnet-connection-settings > label.web-remember-password { display: flex; align-items: center; gap: 6px; }
+.web-remember-password input[type=checkbox] { width: 16px; flex: none; }
+
+.device-search-results { display: grid; width: 100%; max-height: 180px; overflow: auto; gap: 4px; }
+.device-search-results button { text-align: left; overflow-wrap: anywhere; display: flex; align-items: center; gap: 5px; }
+.device-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: #9ca3af; }
+.device-status-dot.online { background: #16a34a; }

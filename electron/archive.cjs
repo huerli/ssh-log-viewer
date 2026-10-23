@@ -15,9 +15,15 @@ function safePath(root, name) {
   if (!target.startsWith(path.resolve(root) + path.sep)) throw new Error(`归档路径不安全: ${name}`);
   return target;
 }
-async function extractArchive(source, destination, signal, progress = () => {}, originalName = path.basename(source)) {
+async function extractArchive(source, destination, signal, progress = () => {}, originalName = path.basename(source), unique = false) {
   // A new directory avoids following pre-existing symbolic links or overwriting files.
-  await fsp.mkdir(destination, { recursive: false, mode: 0o700 });
+  const preferred = destination;
+  for (let index = 1; ; index++) {
+    if (signal.aborted) throw new Error('操作已取消');
+    destination = index === 1 ? preferred : `${preferred} (${index})`;
+    try { await fsp.mkdir(destination, { recursive: false, mode: 0o700 }); break; }
+    catch (error) { if (!unique || error.code !== 'EEXIST') throw error; }
+  }
   let bytes = 0, files = 0;
   const paths = [];
   const limit = () => new Transform({ transform(chunk, encoding, callback) {

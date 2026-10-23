@@ -9,11 +9,20 @@ export type LocalListing = { path: string; root: string; entries: Entry[] };
 export type Match = { line: number; text: string; offset?: number; file?: string; source?: string; exportPath?: string };
 export type LogFont = { family: string; size: number };
 export type SearchResult = { matches: Match[]; count: number; capped: boolean; truncatedLines: number; files?: number; searchedFiles?: number; errors?: string[]; source?: string; paths?: string[] };
-export type ViewerEvent = { result?: SearchResult; type: string; id?: string; requestId?: string; bytes?: number; size?: number; count?: number; kind?: string; state?: string; error?: string; destination?: string; file?: string; fileIndex?: number; files?: number; completedFiles?: number; failedFiles?: number; phase?: string; currentBytes?: number; currentSize?: number; source?: string; message?: string } & Partial<Doc>;
+export type ViewerEvent = { paths?: string[]; result?: SearchResult; type: string; id?: string; requestId?: string; bytes?: number; size?: number; count?: number; kind?: string; state?: string; error?: string; destination?: string; file?: string; fileIndex?: number; files?: number; completedFiles?: number; failedFiles?: number; phase?: string; currentBytes?: number; currentSize?: number; source?: string; message?: string } & Partial<Doc>;
 declare global {
   const __APP_VERSION__: string;
   interface Window {
     viewer: {
+      telnetRecording(mode: string, append: boolean): Promise<string | null>;
+      telnetSaveOutput(): Promise<string | null>;
+      webTelnetPassword(address: string, username: string, password: string, remember: boolean): Promise<boolean>;
+      webTelnetSearchDevices(address: string, keyword: string): Promise<{ number: string; name: string; online: boolean }[]>;
+      webTelnetLogin(address: string, username: string, password: string): Promise<{ tenantId?: string }>;
+      webTelnetConnect(address: string, device: string, token: string): Promise<void>;
+      telnetConnect(host: string, port: number): Promise<void>;
+      telnetWrite(text: string): Promise<void>;
+      telnetClose(): Promise<void>;
       downloadedFiles(): Promise<string[]>;
       settings(): Promise<{ searchHistory?: string[]; profiles: Profile[]; theme?: string; logFont?: LogFont; version?: string; selectedProfile?: string; directories: { download: string; extract: string }; jumpProfiles: JumpProfile[]; selectedJump?: string; localPaths?: string[] }>;
       openFolder(path: string): Promise<void>;
@@ -22,6 +31,8 @@ declare global {
       saveSearchHistory(history: string[]): Promise<string[]>;
       saveTheme(theme: string): Promise<string>;
       saveLogFont(font: LogFont): Promise<LogFont>;
+      deleteProfile(name: string): Promise<Profile[] | null>;
+      deleteJumpProfile(name: string): Promise<{ profiles: Profile[]; jumpProfiles: JumpProfile[] } | null>;
       saveProfile(profile: Profile): Promise<Profile[]>;
       loadJumpProfile(name: string): Promise<JumpProfile>;
       saveJumpProfile(profile: JumpProfile): Promise<JumpProfile[]>;

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import names from '../electron/source-names.cjs';
-const { sourceIdentity, sourceFilename } = names;
+const { sourceIdentity, sourceFilename, downloadPath, extractionPath } = names;
 
 test('download names identify target, account, port, label and jump endpoint', () => {
   const profile = { name: '设备A', username: 'root', host: '192.168.1.10', port: 2220 };
@@ -26,4 +27,21 @@ test('long and IPv6 names stay portable, preserve archive extensions and leave r
   assert.ok(file.endsWith('.tar.gz'));
   assert.ok(!/[<>:"/\\|?*\x00-\x1f\uFFFD]/.test(file));
   assert.ok(file.startsWith(source.tag + '__12345678-'));
+});
+
+
+test('download directories group by local hour, with zero padding and distinct hours', () => {
+  const root = path.resolve('downloads');
+  const remote = '/data/log/signal.log.gz';
+  assert.equal(downloadPath(root, '127.0.0.1', remote, new Date(2026, 9, 22, 9, 59)), path.join(root, '127.0.0.1', 'log', '2026-10-22_09', 'signal.log.gz'));
+  assert.equal(downloadPath(root, '127.0.0.1', remote, new Date(2026, 9, 22, 10, 0)), path.join(root, '127.0.0.1', 'log', '2026-10-22_10', 'signal.log.gz'));
+  assert.equal(downloadPath(root, '127.0.0.1', remote, new Date(2026, 9, 23, 0, 0), '12345678'), path.join(root, '127.0.0.1', 'log', '2026-10-23_00', 'signal.log-12345678.gz'));
+});
+
+
+test('remote extraction paths use the same hourly hierarchy and readable archive names', () => {
+  const root = path.resolve('extracted');
+  const date = new Date(2026, 9, 22, 9);
+  assert.equal(extractionPath(root, '127.0.0.1', '/system/log/monitor.log.gz', date), path.join(root, '127.0.0.1', 'log', '2026-10-22_09', 'monitor.log'));
+  assert.equal(extractionPath(root, '127.0.0.1', '/logs.tar.gz', date), path.join(root, '127.0.0.1', 'root', '2026-10-22_09', 'logs'));
 });

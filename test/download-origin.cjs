@@ -27,12 +27,12 @@ const { createServer } = require('./ssh-fixture.cjs');
       const profile = { name: `设备${index}`, host: '127.0.0.1', port: servers[index].port, username: 'tester', auth: 'password', password: 'fixture-password' };
       await page.evaluate(profile => window.viewer.connect(profile), profile);
       const downloaded = await page.evaluate(() => window.viewer.download('/same.log'));
-      assert.match(path.relative(downloads, downloaded.destination), /^127\.0\.0\.1[/\\]root[/\\]\d{4}-\d{2}-\d{2}[/\\]same(?:-[a-f0-9]{8})?\.log$/);
+      assert.match(path.relative(downloads, downloaded.destination), /^127\.0\.0\.1[/\\]root[/\\]\d{4}-\d{2}-\d{2}_\d{2}[/\\]same(?:-[a-f0-9]{8})?\.log$/);
       if (index === 0) assert.equal(path.basename(downloaded.destination), 'same.log');
       assert.equal(await fs.readFile(downloaded.destination, 'utf8'), `device ${index}`);
       assert.ok(downloaded.origin.includes(`tester@127.0.0.1:${profile.port}`));
       const doc = await page.evaluate(() => window.viewer.openRemote('/same.log'));
-      assert.equal(doc.remote, false); assert.equal(doc.origin, downloaded.origin);
+      assert.equal(doc.remote, true); assert.equal(doc.name, '/same.log'); assert.equal(doc.compressed, false); assert.equal(doc.origin, downloaded.origin);
       results.push(downloaded);
       await page.evaluate(() => window.viewer.disconnect());
     }

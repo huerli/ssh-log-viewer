@@ -10,7 +10,7 @@ function prepareSearchExport(data) {
   const matches = data.matches.map(match => {
     if (!match || typeof match.text !== 'string' || !Number.isSafeInteger(match.line) || match.line < 0) throw new Error('搜索结果格式无效');
     return { ...match, line: match.line + 1, text: match.text };
-  });
+  }).sort((a, b) => String(a.file || data.file || '').localeCompare(String(b.file || data.file || ''), undefined, { numeric: true }) || a.line - b.line);
   const metadata = { query: String(data.query || ''), regex: Boolean(data.regex), caseSensitive: Boolean(data.caseSensitive), totalMatches: Number(data.count) || matches.length, exportedMatches: matches.length, partial: Boolean(data.partial), capped: Boolean(data.capped), note: '日志内容从原始文件重新读取为完整单行；不限制单行长度。' };
   return { matches, metadata };
 }

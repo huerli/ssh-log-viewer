@@ -109,3 +109,20 @@ test('local grouped extraction rejects existing linked subdirectories', async ()
     await assert.rejects(access(path.join(input, 'escaped.log')));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+
+test('repeated remote extraction uses numbered directories without overwriting', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'viewer-extract-number-'));
+  try {
+    const source = path.join(dir, 'monitor.log.gz');
+    const target = path.join(dir, 'monitor.log');
+    await writeFile(source, gzipSync('first'));
+    const first = await extractArchive(source, target, new AbortController().signal, undefined, 'monitor.log.gz', true);
+    await writeFile(source, gzipSync('second'));
+    const second = await extractArchive(source, target, new AbortController().signal, undefined, 'monitor.log.gz', true);
+    assert.equal(first.destination, target);
+    assert.equal(second.destination, target + ' (2)');
+    assert.equal(await readFile(first.paths[0], 'utf8'), 'first');
+    assert.equal(await readFile(second.paths[0], 'utf8'), 'second');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

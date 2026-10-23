@@ -27,8 +27,12 @@
     "test:download-origin": "node test/download-origin.cjs"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/xterm": "^6.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "socket.io-client": "^4.8.4",
     "ssh2": "^1.17.0",
     "tar-stream": "^3.1.7",
     "yauzl": "^3.2.0"
@@ -38,19 +42,41 @@
     "@types/react-dom": "^19.2.0",
     "electron": "^42.0.0",
     "electron-builder": "^26.0.12",
-    "typescript": "^5.9.3",
     "playwright": "^1.56.0",
+    "typescript": "^5.9.3",
     "vite": "^7.2.0"
   },
   "build": {
     "appId": "com.teee.sshlogviewer",
     "productName": "SSH Log Viewer",
-    "directories": {"output": "release"},
+    "directories": {
+      "output": "release"
+    },
     "npmRebuild": false,
-    "files": ["dist/**", "electron/**", "shared/**", "assets/**", "package.json"],
+    "files": [
+      "dist/**",
+      "electron/**",
+      "shared/**",
+      "assets/**",
+      "package.json"
+    ],
     "icon": "assets/icon",
-    "linux": {"target": ["AppImage"], "category": "Development", "syncDesktopName": true},
-    "win": {"target": ["nsis"]},
-    "mac": {"target": ["dmg"]}
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "syncDesktopName": true
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    }
   }
 }

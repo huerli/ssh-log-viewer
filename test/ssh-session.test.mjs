@@ -22,12 +22,12 @@ test('SSH hopping and real reverse tunnel reach target SFTP and close owned conn
     const list = await new Promise((resolve, reject) => session.sftp.readdir('/system/log', (error, entries) => error ? reject(error) : resolve(entries)));
     assert.equal(list[0].filename, 'target.log'); assert.equal(verified[0].role, '跳板机'); assert.equal(verified[1].role, '目标机器');
     assert.notEqual(verified[0].hash, verified[1].hash); assert.ok(verified[1].identity.includes(`jumper@127.0.0.1:${jump.port}`));
-    session.close(); session = null; await pause(100); assert.equal(jump.count, 0);
+    session.close(); session = null; await pause(100); assert.equal(jump.count, 0); assert.equal(target.count, 0);
     const keyPath = path.join(temp, 'jump-key'); await writeFile(keyPath, jump.privateKey);
     const keyProfile = profile(target.port, jump.port); keyProfile.jump = { ...keyProfile.jump, auth: 'key', keyPath, password: undefined };
     session = await connectSession(keyProfile, options());
     assert.equal(await new Promise((resolve, reject) => session.sftp.realpath('/system/log', (error, value) => error ? reject(error) : resolve(value))), '/system/log');
-    session.close(); session = null; await pause(100); assert.equal(jump.count, 0);
+    session.close(); session = null; await pause(100); assert.equal(jump.count, 0); assert.equal(target.count, 0);
     reverse = await reverseTunnel(jump, target.port);
     session = await connectSession(profile(reverse.port, jump.port), options());
     assert.equal(await new Promise((resolve, reject) => session.sftp.realpath('/system/log', (error, value) => error ? reject(error) : resolve(value))), '/system/log');

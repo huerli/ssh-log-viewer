@@ -14,7 +14,7 @@ const { writeSearchExport } = require('./search-export.cjs');
 const { extractArchive, extractLocalArchive } = require('./archive.cjs');
 const { remoteSource } = require('./remote-source.cjs');
 const { CredentialStore, credentialId } = require('./credentials.cjs');
-const { sourceIdentity, sourceFilename, downloadPath } = require('./source-names.cjs');
+const { sourceIdentity, downloadPath, extractionPath } = require('./source-names.cjs');
 
 if (process.platform === 'linux') {
   app.setDesktopName('com.teee.sshlogviewer.desktop');
@@ -286,30 +286,66 @@ async function listLocalDirectory(directory) {
   entries.sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name));
   return { path: resolved, root, entries };
 }
+function compressRemote(client, file, destination, signal) {
+  const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error('操作已取消'));
+    client.exec('umask 077; set -C; gzip -c < ' + quote(file) + ' > ' + quote(destination), (error, channel) => {
+      if (error) return reject(error);
+      let stderr = '';
+      const abort = () => { channel.signal('TERM'); channel.close(); };
+      signal.addEventListener('abort', abort, { once: true });
+      channel.on('data', () => {});
+      channel.stderr.on('data', data => { stderr = (stderr + data).slice(-4096); });
+      channel.on('error', reject);
+      channel.on('close', code => {
+        signal.removeEventListener('abort', abort);
+        if (signal.aborted) reject(new Error('操作已取消'));
+        else if (code !== 0) reject(new Error('远程压缩失败：' + stderr));
+        else resolve();
+      });
+      if (signal.aborted) abort();
+    });
+  });
+}
+
 async function downloadInto(file, folder, signal, report) {
   const downloadedAt = new Date();
   const owner = connectionName;
   const origin = connectionOrigin;
   const downloadRoot = folder;
-  let destination = downloadPath(downloadRoot, origin.host, file, downloadedAt);
+  const attrs = await callSftp('stat', file);
+  const compressedSource = /\.(?:gz|zip|tgz|tar|tar\.gz)$/i.test(file);
+  const archiveSuffix = compressedSource ? '' : '.gz';
+  let destination = downloadPath(downloadRoot, origin.host, file + archiveSuffix, downloadedAt);
   folder = path.dirname(destination);
   await fsp.mkdir(folder, { recursive: true, mode: 0o700 });
-  const attrs = await callSftp('stat', file);
   const temporary = path.join(folder, '.part-' + crypto.randomUUID());
+  const client = connection, transfer = sftp;
+  const remoteArchive = compressedSource ? null : '/tmp/ssh-log-viewer-' + crypto.randomUUID() + '.gz';
   try {
-    const bytes = await copyStream(remoteSource(sftp, file, 0, attrs.size, signal), temporary, attrs.size, signal, report);
+    if (remoteArchive) {
+      report({ phase: '远程压缩', bytes: 0 });
+      await compressRemote(client, file, remoteArchive, signal);
+    }
+    const source = remoteArchive || file;
+    const transferAttrs = await new Promise((resolve, reject) => transfer.stat(source, (error, attrs) => error ? reject(error) : resolve(attrs)));
+    const bytes = await copyStream(remoteSource(transfer, source, 0, transferAttrs.size, signal), temporary, transferAttrs.size, signal, data => report({ ...data, phase: '下载' }));
     const after = await callSftp('stat', file);
     if (signal.aborted) throw new Error('操作已取消');
-    if (bytes !== attrs.size || after.size !== attrs.size || after.mtime !== attrs.mtime) throw new Error('远程文件在下载过程中改变，请重试');
+    if (bytes !== transferAttrs.size || after.size !== attrs.size || after.mtime !== attrs.mtime) throw new Error('远程文件在下载过程中改变，请重试');
     try { await fsp.copyFile(temporary, destination, fs.constants.COPYFILE_EXCL); }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      destination = downloadPath(downloadRoot, origin.host, file, downloadedAt, crypto.randomUUID().slice(0, 8));
+      destination = downloadPath(downloadRoot, origin.host, file + archiveSuffix, downloadedAt, crypto.randomUUID().slice(0, 8));
       await fsp.copyFile(temporary, destination, fs.constants.COPYFILE_EXCL);
     }
     await rememberLocal(file, [destination], owner);
-    return { destination, bytes, origin: origin.label };
-  } finally { await fsp.rm(temporary, { force: true }); }
+    return { destination, bytes: (await fsp.stat(destination)).size, origin: origin.label };
+  } finally {
+    await fsp.rm(temporary, { force: true });
+    if (remoteArchive && !transfer.destroyed) transfer.unlink(remoteArchive, () => {});
+  }
 }
 
 async function runTask(kind, work, origin) {
@@ -411,7 +447,119 @@ async function follow() {
   finally { followBusy = false; }
 }
 
+let telnetOutputFile, telnetOutputHost = '', telnetOutputQueue = Promise.resolve();
+let telnetConnectionLogQueue = Promise.resolve();
+let telnetConnectionContext = '';
+let telnetRecording = null;
+function logTelnetConnection(message) {
+  const line = `${new Date().toISOString()} ${telnetConnectionContext ? `[${telnetConnectionContext}] ` : ''}${message}\n`;
+  try {
+    const directory = app.getPath('logs');
+    telnetConnectionLogQueue = telnetConnectionLogQueue
+      .then(() => fsp.mkdir(directory, { recursive: true, mode: 0o700 }))
+      .then(() => fsp.appendFile(path.join(directory, 'telnet-connection.log'), line, { mode: 0o600 }))
+      .catch(() => {});
+  } catch {}
+}
+const telnetEmit = data => {
+  if (data.type === 'telnet-status') logTelnetConnection(data.message || '状态未知');
+  if (data.type === 'telnet-connection-log') logTelnetConnection(data.message || '连接诊断信息未知');
+  if (data.type === 'telnet-data' && telnetOutputFile) {
+    const file = telnetOutputFile, text = data.message;
+    telnetOutputQueue = telnetOutputQueue.then(() => fsp.appendFile(file, text, { mode: 0o600 })).catch(error => event({ type: 'telnet-status', message: '输出记录失败：' + error.message }));
+  }
+  if (data.type === 'telnet-data' && telnetRecording) {
+    const recording = telnetRecording;
+    let text = data.message;
+    if (recording.mode === 'printable') text = require('node:util').stripVTControlCharacters(text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+    telnetOutputQueue = telnetOutputQueue.then(() => fsp.appendFile(recording.file, text, { mode: 0o600 })).catch(error => event({ type: 'telnet-status', message: '日志写入失败：' + error.message }));
+  }
+  event(data);
+};
+const telnet = require('./telnet.cjs').createTelnet(telnetEmit);
+const webTelnet = require('./web-telnet.cjs').createWebTelnet(telnetEmit);
+let webTelnetActive = false, webLoginSession;
+const webPasswordId = (address, username) => 'web-telnet-' + crypto.createHash('sha256').update(JSON.stringify([require('./web-telnet.cjs').normalizeWebAddress(address), username.trim()])).digest('hex');
 const handlers = {
+  webTelnetSearchDevices: async (address, keyword) => {
+    address = require('./web-telnet.cjs').normalizeWebAddress(address);
+    if (!webLoginSession || webLoginSession.address !== address) throw new Error('请先登录当前 Web 服务');
+    return require('./web-telnet.cjs').searchDevices(address, webLoginSession, keyword);
+  },
+  webTelnetPassword: async (address, username, password, remember) => {
+    const id = webPasswordId(address, username);
+    if (!remember) await credentials.set(id, null);
+    else if (password) await credentials.set(id, password);
+    return Boolean(await credentials.get(id));
+  },
+  webTelnetLogin: async (address, username, password) => {
+    address = require('./web-telnet.cjs').normalizeWebAddress(address);
+    if (!password && webLoginSession?.address === address && webLoginSession.username === username.trim()) return { tenantId: webLoginSession.tenantId };
+    if (!password) password = await credentials.get(webPasswordId(address, username));
+    webLoginSession = undefined;
+    const login = await require('./web-telnet.cjs').webLogin(address, username, password);
+    webLoginSession = { address: address.replace(/\/$/, ''), username: username.trim(), ...login };
+    return { tenantId: login.tenantId };
+  },
+  webTelnetConnect: async (address, device, token) => {
+    address = require('./web-telnet.cjs').normalizeWebAddress(address);
+    telnetConnectionContext = `web ${address} device=${String(device).replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+    logTelnetConnection('开始连接');
+    telnet.close(); webTelnet.close(); webTelnetActive = true;
+    await telnetOutputQueue;
+    telnetOutputHost = String(device).replace(/[^a-zA-Z0-9.-]/g, '_');
+    telnetOutputFile = path.join(cacheRoot, 'web-telnet-' + crypto.randomUUID() + '.txt');
+    await fsp.writeFile(telnetOutputFile, '', { mode: 0o600 });
+    if (!token) {
+      if (!webLoginSession || webLoginSession.address !== address.replace(/\/$/, '')) throw new Error('请先登录当前 Web 服务');
+      token = await require('./web-telnet.cjs').getTelnetToken(address, webLoginSession);
+    }
+    try { return await webTelnet.connect(address, device, token); }
+    catch (error) { logTelnetConnection('连接失败：' + error.message); throw error; }
+  },
+  telnetConnect: async (host, port) => {
+    telnetConnectionContext = `direct ${String(host).replace(/[^a-zA-Z0-9.-]/g, '_')}:${port}`;
+    logTelnetConnection('开始连接');
+    webTelnet.close(); webTelnetActive = false;
+    telnet.close();
+    await telnetOutputQueue;
+    if (telnetOutputFile) await fsp.rm(telnetOutputFile, { force: true });
+    telnetOutputFile = path.join(cacheRoot, 'telnet-' + crypto.randomUUID() + '.txt');
+    telnetOutputHost = String(host).replace(/[^a-zA-Z0-9.-]/g, '_');
+    await fsp.writeFile(telnetOutputFile, '', { mode: 0o600 });
+    try {
+      await telnet.connect(host, port);
+      // Request the device information as soon as a direct Telnet session is ready.
+      // Web Telnet has its own command protocol and is intentionally left unchanged.
+      telnet.write('send dev-get-info\r\n');
+      return true;
+    } catch (error) {
+      logTelnetConnection('连接失败：' + error.message);
+      throw error;
+    }
+  },
+  telnetSaveOutput: async () => {
+    if (!telnetOutputFile) throw new Error('尚无 Telnet 会话输出');
+    const file = telnetOutputFile;
+    const chosen = await dialog.showSaveDialog(win, { title: '保存 Telnet 输出', defaultPath: path.join(app.getPath('downloads'), 'telnet-' + telnetOutputHost + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt'), filters: [{ name: '文本日志', extensions: ['txt', 'log'] }] });
+    if (chosen.canceled || !chosen.filePath) return null;
+    await telnetOutputQueue;
+    await fsp.copyFile(file, chosen.filePath);
+    return chosen.filePath;
+  },
+  telnetRecording: async (mode, append) => {
+    if (!['none', 'printable', 'all'].includes(mode)) throw new Error('日志类型无效');
+    telnetRecording = null;
+    await telnetOutputQueue;
+    if (mode === 'none') return null;
+    const chosen = await dialog.showSaveDialog(win, { title: '选择持续记录日志文件', defaultPath: path.join(app.getPath('downloads'), 'telnet-' + telnetOutputHost + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.log') });
+    if (chosen.canceled || !chosen.filePath) return null;
+    await fsp.writeFile(chosen.filePath, '', { flag: append ? 'a' : 'w', mode: 0o600 });
+    telnetRecording = { mode, file: chosen.filePath };
+    return chosen.filePath;
+  },
+  telnetWrite: text => webTelnetActive ? webTelnet.write(text) : telnet.write(text),
+  telnetClose: () => { telnet.close(); webTelnet.close(); },
   downloadedFiles: async () => {
     const recorded = new Set([...(config.localCopies || []).flatMap(item => item.paths || []), ...(config.lastLocalPaths || []), ...(config.localExtractions || []).flatMap(item => item.paths || [])]);
     const folders = [config.directories.download, config.directories.extract];
@@ -466,6 +614,33 @@ const handlers = {
     } else await credentials.set(id, null);
     config.jumpProfiles = [...config.jumpProfiles.filter(item => item.name !== name), { ...saved, credentialId: id }];
     config.lastJumpName = name; await save(); return config.jumpProfiles;
+  },
+  deleteProfile: async name => {
+    const saved = config.profiles.find(item => item.name === name);
+    if (!saved) throw new Error('连接配置不存在');
+    const { response } = await dialog.showMessageBox(win, { type: 'question', title: '删除连接配置', message: `删除连接“${name}”？`, detail: '同时删除该连接保存的密码，当前已建立的连接不受影响。', buttons: ['取消', '删除'], defaultId: 0, cancelId: 0, noLink: true });
+    if (response !== 1) return null;
+    await credentials.set(saved.credentialId || credentialId(saved), null);
+    if (!saved.jumpName && saved.jump?.credentialId) await credentials.set(saved.jump.credentialId, null);
+    config.profiles = config.profiles.filter(item => item.name !== name);
+    if (config.lastProfileName === name) config.lastProfileName = '';
+    await save(); return config.profiles;
+  },
+  deleteJumpProfile: async name => {
+    const saved = config.jumpProfiles.find(item => item.name === name);
+    if (!saved) throw new Error('跳板机配置不存在');
+    const affected = config.profiles.filter(item => item.jumpName === name);
+    const { response } = await dialog.showMessageBox(win, { type: 'question', title: '删除跳板机配置', message: `删除跳板机“${name}”？`, detail: `同时删除该跳板机保存的密码。${affected.length ? `关联的 ${affected.length} 个连接需重新配置跳板机后才能通过跳板机连接。` : ''}当前已建立的连接不受影响。`, buttons: ['取消', '删除'], defaultId: 0, cancelId: 0, noLink: true });
+    if (response !== 1) return null;
+    if (saved.credentialId) await credentials.set(saved.credentialId, null);
+    config.jumpProfiles = config.jumpProfiles.filter(item => item.name !== name);
+    config.profiles = config.profiles.map(item => {
+      if (item.jumpName !== name) return item;
+      const { jumpName, ...remaining } = item;
+      return { ...remaining, jump: { enabled: Boolean(item.jump?.enabled), host: '', port: 22, username: '', auth: 'password', keyPath: '', rememberPassword: true, hasPassword: false } };
+    });
+    if (config.lastJumpName === name) config.lastJumpName = '';
+    await save(); return { profiles: config.profiles, jumpProfiles: config.jumpProfiles };
   },
   openFolder: async folder => {
     const resolved = await fsp.realpath(String(folder));
@@ -586,10 +761,7 @@ const handlers = {
     if (!files.length) return { matches: [], count: 0, capped: false, truncatedLines: 0, files: 0, searchedFiles: 0, errors: [], source: 'local', paths: [] };
     return handlers.searchExtracted(files, query, options, requestId);
   },
-  openRemote: async file => {
-    const paths = await localCopyPaths(remote => remote === path.posix.normalize(file));
-    return paths.length ? openFile(null, paths[0]) : openFile(file);
-  },
+  openRemote: file => openFile(file),
   openLocal: async () => {
     const chosen = await dialog.showOpenDialog(win, { title: '打开本地日志', properties: ['openFile'] });
     return chosen.canceled ? null : openFile(null, chosen.filePaths[0]);
@@ -755,9 +927,9 @@ const handlers = {
           downloaded = await downloadInto(path.posix.join(folder, entry.filename), downloadFolder, signal, progress => update('下载', { currentBytes: progress.bytes, currentSize: progress.size }));
           result.bytes += downloaded.bytes; result.downloadedFiles++;
           if (unpack && /\.(gz|zip|tgz|tar)$/i.test(entry.filename)) {
-            await fsp.mkdir(extractFolder, { recursive: true, mode: 0o700 });
-            const destination = path.join(extractFolder, sourceFilename(origin.tag, entry.filename.replace(/\.(tar\.gz|tgz|gz|zip|tar)$/i, '') + '-extracted-' + Date.now() + '-' + crypto.randomUUID().slice(0, 8)));
-            const extracted = await extractArchive(downloaded.destination, destination, signal, progress => update('解压', { currentBytes: progress.bytes }), entry.filename);
+            const destination = extractionPath(extractFolder, origin.host, path.posix.join(folder, entry.filename));
+            await fsp.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+            const extracted = await extractArchive(downloaded.destination, destination, signal, progress => update('解压', { currentBytes: progress.bytes }), entry.filename, true);
             await rememberLocal(path.posix.join(folder, entry.filename), extracted.paths, owner);
             result.paths.push(...extracted.paths);
             for (const file of extracted.paths) extractedFiles.add(file);
@@ -835,10 +1007,10 @@ const handlers = {
           if (bytes !== attrs.size || after.size !== attrs.size || after.mtime !== attrs.mtime) throw new Error('远程归档在下载过程中改变，请重试');
         } catch (error) { await fsp.rm(archive, { force: true }); throw error; }
       }
-      const folderName = path.basename(source).replace(/\.(tar\.gz|tgz|gz|zip|tar)$/i, '') + '-extracted-' + Date.now() + '-' + crypto.randomUUID().slice(0, 8);
-      const destination = path.join(config.directories.extract, remoteFile ? sourceFilename(origin.tag, folderName) : folderName);
+      const destination = remoteFile ? extractionPath(config.directories.extract, origin.host, source) : undefined;
       try {
-        const result = remoteFile ? await extractArchive(archive, destination, signal, report, path.basename(source)) : await extractLocalArchive(source, config.directories.extract, signal, report);
+        if (remoteFile) await fsp.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+        const result = remoteFile ? await extractArchive(archive, destination, signal, report, path.basename(source), true) : await extractLocalArchive(source, config.directories.extract, signal, report);
         result.paths.sort((a, b) => Number(/\.(log|txt)$/i.test(b)) - Number(/\.(log|txt)$/i.test(a)) || a.localeCompare(b));
         if (!remoteFile) registerLocalExtraction(source, result.paths);
         await rememberLocal(remoteFile, result.paths, owner);
@@ -890,6 +1062,8 @@ app.whenReady().then(async () => {
 });
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', e => {
+  webTelnet.close();
+  telnet.close();
   if (quitting) return;
   e.preventDefault(); quitting = true; disconnect();
   Promise.allSettled([saveQueue, credentials?.queue]).then(() => saveQueue).finally(() => fsp.rm(cacheRoot, { recursive: true, force: true })).finally(() => app.quit());

@@ -54,6 +54,6 @@ async function createServer(root) {
     })));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { port: server.address().port, requests, close: () => { for (const client of clients) client.end(); return new Promise(resolve => server.close(resolve)); } };
+  return { port: server.address().port, get count() { return clients.size; }, requests, close: () => { for (const client of clients) client.end(); return new Promise(resolve => server.close(resolve)); } };
 }
 module.exports = { createServer };

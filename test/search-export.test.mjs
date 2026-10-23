@@ -47,3 +47,33 @@ test('streamed exports preserve complete lines beyond the previous single-line l
     assert.match(parsed.note, /不限制单行长度/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('exports sort files ascending and lines ascending without changing search priority', async () => {
+  const data = { matches: [
+    { file: '/logs/app.10.log', line: 5, text: 'ten' },
+    { file: '/logs/app.2.log', line: 8, text: 'two later' },
+    { file: '/logs/app.1.log', line: 3, text: 'one' },
+    { file: '/logs/app.2.log', line: 1, text: 'two earlier' },
+  ] };
+  const original = structuredClone(data);
+  const expected = ['one', 'two earlier', 'two later', 'ten'];
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'viewer-export-order-'));
+  try {
+    for (const extension of ['txt', 'csv', 'json']) {
+      const filename = path.join(dir, `out.${extension}`);
+      const formatted = formatSearchExport(data, filename);
+      await writeSearchExport(data, filename, async function* (match) { yield match.text; });
+      assert.equal(await readFile(filename, 'utf8'), formatted);
+      if (extension === 'json') assert.deepEqual(JSON.parse(formatted).matches.map(match => match.text), expected);
+      else {
+        let previous = -1;
+        for (const text of expected) {
+          const index = formatted.indexOf(text);
+          assert.ok(index > previous);
+          previous = index;
+        }
+      }
+    }
+    assert.deepEqual(data, original);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

@@ -3,7 +3,16 @@ const fs = require('node:fs/promises');
 
 async function connectSession(profile, { signal, verify, report = () => {}, onError = () => {}, onClose = () => {} }) {
   const clients = [], streams = [];
-  const close = () => { for (const stream of streams) stream.destroy(); for (const client of [...clients].reverse()) client.destroy(); };
+  let closing = false;
+  const close = () => {
+    if (closing) return;
+    closing = true;
+    signal.removeEventListener('abort', abort);
+    // Release every owned connection even when another resource fails to close.
+    for (const resource of [...clients].reverse().concat(streams)) {
+      try { resource.destroy(); } catch {}
+    }
+  };
   const abort = () => close();
   signal.addEventListener('abort', abort, { once: true });
   const cancelled = () => { if (signal.aborted) throw new Error('连接已取消'); };
@@ -53,8 +62,8 @@ async function connectSession(profile, { signal, verify, report = () => {}, onEr
           const authFailure = error.level === 'client-authentication' || /All configured authentication methods failed/i.test(error.message);
           const method = value.auth === 'key' ? '私钥' : value.auth === 'agent' ? 'SSH Agent' : '密码';
           reject(new Error(authFailure ? `${role}认证失败（${value.username}@${value.host}:${port}，${method}）。${interactiveHint || '请检查账号、密码/私钥，以及服务器允许的认证方式'}` : `${role}连接失败：${error.message}`));
-        } else onError(`${role}：${error.message}`); });
-      client.on('close', () => { if (!ready) reject(new Error(`${role}连接已关闭`)); else onClose(); });
+        } else if (!closing) onError(`${role}：${error.message}`); });
+      client.on('close', () => { if (!ready) reject(new Error(`${role}连接已关闭`)); else if (!closing) onClose(); });
       client.connect(options);
     });
     cancelled(); return client;
