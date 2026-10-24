@@ -1,14 +1,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { targets, validateVersion, validateArch, sha256 } = require('./collect-release.cjs');
+const { targets, releaseVariants, releaseStem, validateVersion, validateArch, sha256 } = require('./collect-release.cjs');
 
 function validateUpdates(directory, version, targetOnly, expectedArch) {
   validateVersion(version);
   if (targetOnly) validateArch(targetOnly, expectedArch);
-  const selected = targetOnly ? { [targetOnly]: targets[targetOnly] } : targets;
+  const selected = targetOnly ? [{ target: targetOnly, arch: expectedArch }] : releaseVariants;
   const expected = [];
-  for (const [target, { extension, platform }] of Object.entries(selected)) {
-    const stem = `ssh-log-viewer-${version}-${target}`;
+  for (const { target, arch } of selected) {
+    const { extension, platform } = targets[target];
+    const stem = releaseStem(target, version, arch);
     const asset = `${stem}${extension}`;
     const metadataName = `${stem}.update.json`;
     expected.push(asset, `${asset}.sha256`, metadataName);
@@ -25,7 +26,7 @@ function validateUpdates(directory, version, targetOnly, expectedArch) {
       throw new Error(`metadata does not match release: ${metadataName}`);
     }
     validateArch(target, metadata.arch);
-    if (expectedArch && metadata.arch !== expectedArch) throw new Error(`metadata architecture mismatch: ${metadataName}`);
+    if (metadata.arch !== arch) throw new Error(`metadata architecture mismatch: ${metadataName}`);
     const bytes = fs.readFileSync(path.join(directory, asset));
     const hash = sha256(bytes);
     if (!bytes.length || !Number.isSafeInteger(metadata.size) || metadata.size !== bytes.length || metadata.sha256 !== hash) {
@@ -35,8 +36,8 @@ function validateUpdates(directory, version, targetOnly, expectedArch) {
     if (checksum !== `${hash}  ${asset}\n`) throw new Error(`checksum mismatch: ${asset}`);
   }
   const actual = fs.readdirSync(directory).sort();
-  if (JSON.stringify(actual) !== JSON.stringify(expected.sort())) throw new Error('expected exactly three installers, checksums, and update metadata files');
-  console.log(`Validated ${Object.keys(selected).length} update metadata files and final installers for ${version}`);
+  if (JSON.stringify(actual) !== JSON.stringify(expected.sort())) throw new Error('expected exactly the required installers, checksums, and update metadata files');
+  console.log(`Validated ${selected.length} update metadata files and final installers for ${version}`);
 }
 
 if (require.main === module) {

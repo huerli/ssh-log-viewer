@@ -160,6 +160,90 @@ test('old releases without metadata and incompatible architectures offer manual 
   assert.equal(unsupported.calls.length, 1);
 });
 
+async function macFixture(t, arch, legacyArch = 'arm64', includeX64 = true) {
+  const f = await fixture(t, { platform: 'darwin', arch });
+  const metadata = new Map();
+  const installers = new Map();
+  f.release.assets = [];
+  for (const [target, targetArch] of [['macos', legacyArch], ...(includeX64 ? [['macos-x64', 'x64']] : [])]) {
+    const name = `ssh-log-viewer-0.0.6-${target}`;
+    const installer = Buffer.from(`macOS ${targetArch} installer`);
+    const info = { ...f.metadata, platform: 'darwin', arch: targetArch, asset: `${name}.dmg`, size: installer.length, sha256: sha256(installer) };
+    metadata.set(`${name}.update.json`, info);
+    installers.set(info.asset, installer);
+    for (const [assetName, size] of [[`${name}.update.json`, Buffer.byteLength(JSON.stringify(info))], [info.asset, installer.length]]) {
+      f.release.assets.push({ name: assetName, size, browser_download_url: `${GITHUB}/download/v0.0.6/${assetName}` });
+    }
+  }
+  f.handler = url => {
+    const asset = f.release.assets.find(asset => asset.browser_download_url === url);
+    if (asset) return metadata.has(asset.name) ? json(metadata.get(asset.name)) : new Response(installers.get(asset.name));
+  };
+  return { ...f, macMetadata: metadata, macInstallers: installers };
+}
+
+test('coexisting macOS installers select x64 metadata for Intel and legacy arm64 metadata for Apple Silicon', async t => {
+  for (const [arch, target] of [['x64', 'macos-x64'], ['arm64', 'macos']]) {
+    const f = await macFixture(t, arch);
+    const name = `ssh-log-viewer-0.0.6-${target}`;
+    const state = await f.updater.check();
+    assert.equal(state.supported, true);
+    assert.equal(state.platform, 'darwin');
+    assert.equal(state.arch, arch);
+    assert.equal(state.assetName, `${name}.dmg`);
+    assert.deepEqual(f.calls.map(call => call.url), [API, `${GITHUB}/download/v0.0.6/${name}.update.json`]);
+    const downloaded = await f.updater.download();
+    assert.equal(downloaded.status, 'ready');
+    assert.equal(path.basename(downloaded.installerPath), `${name}.dmg`);
+    assert.deepEqual(await readFile(downloaded.installerPath), f.macInstallers.get(`${name}.dmg`));
+  }
+});
+
+test('Intel macOS falls back to legacy metadata only when its architecture matches', async t => {
+  for (const legacyArch of ['x64', 'arm64']) {
+    const f = await macFixture(t, 'x64', legacyArch, false);
+    const state = await f.updater.check();
+    assert.equal(state.status, 'available');
+    assert.equal(state.supported, legacyArch === 'x64');
+    if (state.supported) {
+      assert.equal(state.assetName, 'ssh-log-viewer-0.0.6-macos.dmg');
+      assert.equal((await f.updater.download()).status, 'ready');
+    } else {
+      assert.match(state.error, /架构/);
+      assert.equal((await f.updater.download()).status, 'error');
+      assert.equal(f.calls.length, 2);
+    }
+  }
+});
+
+test('invalid exact macOS x64 metadata never falls back to a compatible legacy installer', async t => {
+  for (const change of [{ platform: 'linux' }, { arch: 'arm64' }, { schemaVersion: 2 }, { asset: 'ssh-log-viewer-0.0.6-macos.dmg' }, { sha256: 'invalid' }]) {
+    const f = await macFixture(t, 'x64', 'x64');
+    Object.assign(f.macMetadata.get('ssh-log-viewer-0.0.6-macos-x64.update.json'), change);
+    const state = await f.updater.check();
+    assert.equal(state.supported, false, JSON.stringify(change));
+    assert.equal(state.status, change.platform || change.arch ? 'available' : 'error');
+    assert.deepEqual(f.calls.map(call => call.url), [API, `${GITHUB}/download/v0.0.6/ssh-log-viewer-0.0.6-macos-x64.update.json`]);
+    assert.equal((await f.updater.download()).status, 'error');
+    assert.equal(f.calls.length, 2);
+  }
+});
+
+test('macOS x64 exact resources retain duplicate, official URL and installer presence validation', async t => {
+  for (const mode of ['duplicate', 'external', 'missing-installer']) {
+    const f = await macFixture(t, 'x64', 'x64');
+    const metadataAsset = f.release.assets.find(asset => asset.name.endsWith('-macos-x64.update.json'));
+    if (mode === 'duplicate') f.release.assets.push({ ...metadataAsset });
+    if (mode === 'external') metadataAsset.browser_download_url = 'https://untrusted.invalid/metadata.json';
+    if (mode === 'missing-installer') f.release.assets = f.release.assets.filter(asset => !asset.name.endsWith('-macos-x64.dmg'));
+    const state = await f.updater.check();
+    assert.equal(state.status, 'error', mode);
+    assert.equal(state.supported, false);
+    assert.equal(f.calls.length, mode === 'missing-installer' ? 2 : 1);
+    assert.equal((await f.updater.download()).status, 'error');
+  }
+});
+
 test('metadata must bind exact version, platform, architecture, installer name, size and digest', async t => {
   const invalidMetadata = [
     { schemaVersion: 2 }, { version: '0.0.7' }, { asset: '../../installer.deb' },

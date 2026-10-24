@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 const scripts = fileURLToPath(new URL('../scripts/', import.meta.url));
 const version = '1.2.3-rc.1+build.5';
-const targets = { linux: ['.deb', 'linux', 'x64'], windows: ['.exe', 'win32', 'ia32'], macos: ['.dmg', 'darwin', 'arm64'] };
+const variants = [['linux', '.deb', 'linux', 'x64'], ['windows', '.exe', 'win32', 'x64'], ['macos', '.dmg', 'darwin', 'arm64'], ['macos', '.dmg', 'darwin', 'x64']];
+const stem = (target, arch) => `ssh-log-viewer-${version}-${target}${target === 'macos' && arch === 'x64' ? '-x64' : ''}`;
 function run(script, args, cwd) {
   return spawnSync(process.execPath, [path.join(scripts, script), ...args], { cwd, encoding: 'utf8' });
 }
@@ -18,7 +19,7 @@ function fixture(t) {
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.mkdirSync(path.join(cwd, 'release'));
   fs.mkdirSync(path.join(cwd, 'assets'));
-  for (const [target, [ext, platform, arch]] of Object.entries(targets)) {
+  for (const [target, ext, platform, arch] of variants) {
     const bytes = Buffer.from(`dummy ${platform} installer\0\xff`, 'utf8');
     fs.writeFileSync(path.join(cwd, 'release', `original${ext}`), bytes);
     const result = run('collect-release.cjs', [target, version, '--arch', arch], cwd);
@@ -33,10 +34,10 @@ const metadataName = `ssh-log-viewer-${version}-linux.update.json`;
 
 test('collects exact updater schema and validates final bytes for all platforms', t => {
   const { assets, validate } = fixture(t);
-  for (const [target, [ext, platform, arch]] of Object.entries(targets)) {
-    const asset = `ssh-log-viewer-${version}-${target}${ext}`;
+  for (const [target, ext, platform, arch] of variants) {
+    const asset = `${stem(target, arch)}${ext}`;
     const bytes = fs.readFileSync(path.join(assets, asset));
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(assets, `ssh-log-viewer-${version}-${target}.update.json`))), {
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(assets, `${stem(target, arch)}.update.json`))), {
       schemaVersion: 1, version, platform, arch, asset, size: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     });
@@ -93,7 +94,31 @@ test('collector rejects empty or multiple installers', t => {
 
 test('per-build validation binds metadata to the packaging architecture', t => {
   const { cwd } = fixture(t);
+  const metadataPath = path.join(cwd, 'artifacts', `${stem('macos', 'x64')}.update.json`);
+  const metadata = JSON.parse(fs.readFileSync(metadataPath));
+  metadata.arch = 'arm64';
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata));
   const result = run('validate-updates.cjs', ['artifacts', version, '--target', 'macos', '--arch', 'x64'], cwd);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /architecture mismatch/);
+});
+
+
+test('full releases require Intel macOS as well as Apple Silicon assets', t => {
+  const { assets, validate } = fixture(t);
+  fs.unlinkSync(path.join(assets, `${stem('macos', 'x64')}.dmg`));
+  const result = validate();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /macos-x64/);
+});
+
+test('macOS metadata cannot be swapped between architectures', t => {
+  const { assets, validate } = fixture(t);
+  const file = path.join(assets, `${stem('macos', 'arm64')}.update.json`);
+  const metadata = JSON.parse(fs.readFileSync(file));
+  metadata.arch = 'x64';
+  fs.writeFileSync(file, JSON.stringify(metadata));
+  const result = validate();
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /architecture mismatch/);
 });

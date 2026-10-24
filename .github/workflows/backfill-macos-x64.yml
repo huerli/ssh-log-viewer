@@ -1,0 +1,109 @@
+name: Backfill V0.0.11 macOS Intel installer
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/backfill-macos-x64.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backfill-V0.0.11-macos-x64
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package original V0.0.11 for macOS x64
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15-intel
+    steps:
+      - name: Check out packaging tools
+        uses: actions/checkout@v4.2.2
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Check out original release source
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: V0.0.11
+          path: source
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4.1.0
+        with:
+          version: '11.25.0'
+          package_json_file: source/package.json
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '24.x'
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+      - name: Verify release revision, version, and runner
+        working-directory: source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 939e11c3018585791e2d9b02f6bfad308b6fecf5
+          test "$(node -p "require('./package.json').version")" = 0.0.11
+          test "$(node -p 'process.arch')" = x64
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Build and package Intel installer
+        working-directory: source
+        run: |
+          set -euo pipefail
+          pnpm build
+          pnpm exec electron-builder --mac dmg --x64 --publish never
+          test "$(lipo -archs 'release/mac/SSH Log Viewer.app/Contents/MacOS/SSH Log Viewer')" = x86_64
+          node ../tooling/scripts/collect-release.cjs macos 0.0.11 --arch x64
+          node ../tooling/scripts/validate-updates.cjs artifacts 0.0.11 --target macos --arch x64
+      - name: Upload verified Intel installer
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ssh-log-viewer-macos-x64-V0.0.11-backfill
+          path: source/artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Append Intel assets to existing V0.0.11
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out packaging validator
+        uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '24.x'
+      - name: Download Intel package
+        uses: actions/download-artifact@v4.3.0
+        with:
+          name: ssh-log-viewer-macos-x64-V0.0.11-backfill
+          path: backfill-assets
+      - name: Verify and append release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node scripts/validate-updates.cjs backfill-assets 0.0.11 --target macos --arch x64
+          test "$(gh release view V0.0.11 --json isDraft --jq .isDraft)" = false
+          gh release upload V0.0.11 backfill-assets/*
+          gh release view V0.0.11 --json assets --jq '.assets[].name' > published-assets.txt
+          for file in backfill-assets/*; do grep -Fx "$(basename "$file")" published-assets.txt; done
+          gh release view V0.0.11 --json body --jq .body > release-notes.md
+          if ! grep -Fq 'macos-x64.dmg' release-notes.md; then
+            cat >> release-notes.md <<'NOTES'
+
+          补充发布：Intel Mac（x86_64）请下载 `ssh-log-viewer-0.0.11-macos-x64.dmg`；Apple Silicon（ARM64）请下载 `ssh-log-viewer-0.0.11-macos.dmg`。Intel 包使用 V0.0.11 原标签源码构建，并附带校验文件和独立架构更新元数据。
+          NOTES
+            gh release edit V0.0.11 --notes-file release-notes.md
+          fi

@@ -173,7 +173,7 @@ pnpm run pack
 
 项目提供 Windows/macOS 打包配置，当前只在 Linux 验证。发布安装包前需要在对应系统验证；可使用 `pnpm exec electron-builder --linux AppImage` 等生成安装包。
 
-发布流程为每个平台生成安装包、`.sha256` 和 `.update.json`，元数据包含版本、系统、实际打包架构、文件名、大小和 SHA-256；上传前及发布前均校验最终文件。手动收集安装包时使用 `node scripts/collect-release.cjs <linux|windows|macos> <版本> --arch <x64|arm64>`，并使用 `scripts/validate-updates.cjs` 验证。更新客户端仅使用公开正式 Release；检查 API 见 [GitHub Releases 文档](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)。
+发布流程分别构建 Linux x64、Windows x64、macOS ARM64 和 macOS Intel x64。macOS Intel 包文件名带 `-macos-x64`，Apple Silicon 包沿用 `-macos`；两种架构分别生成安装包、`.sha256` 和 `.update.json`，元数据包含版本、系统、实际打包架构、文件名、大小和 SHA-256；上传前及发布前均校验最终文件。手动收集安装包时使用 `node scripts/collect-release.cjs <linux|windows|macos> <版本> --arch <x64|arm64>`，并使用 `scripts/validate-updates.cjs` 验证。更新客户端仅使用公开正式 Release；检查 API 见 [GitHub Releases 文档](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)。
 
 ## 当前范围
 

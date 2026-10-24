@@ -234,15 +234,22 @@ function createUpdater(options) {
         const target = TARGETS[platform];
         if (!target || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(arch)) return publish({ status: 'available', supported: false, error: '此版本没有适用于当前平台的安装包，请前往发布页面手动下载。' });
         if (!Array.isArray(release.assets)) throw new Error('发布版本缺少资源列表');
-        const metadataName = `ssh-log-viewer-${version.version}-${target.name}.update.json`;
-        const metadataAsset = singleAsset(release.assets, metadataName);
+        let targetName = target.name;
+        let metadataAsset;
+        if (platform === 'darwin' && arch === 'x64') {
+          metadataAsset = singleAsset(release.assets, `ssh-log-viewer-${version.version}-macos-x64.update.json`);
+          if (metadataAsset) targetName = 'macos-x64';
+        }
+        // Legacy releases used one macOS filename. Fall back only when the
+        // architecture-specific metadata is absent, never when it is invalid.
+        metadataAsset ||= singleAsset(release.assets, `ssh-log-viewer-${version.version}-${targetName}.update.json`);
         if (!metadataAsset) return publish({ status: 'available', supported: false, error: '此版本未提供自动更新元数据，请前往发布页面手动下载。' });
         if (!validSize(metadataAsset.size, MAX_JSON_BYTES)) throw new Error('更新元数据大小无效');
         const metadataUrl = validateAssetUrl(metadataAsset, release.tag_name);
         const metadata = await readJson(await request(metadataUrl, controller), controller.signal);
         if (!metadata || metadata.schemaVersion !== 1 || metadata.version !== version.version) throw new Error('更新元数据的版本或格式无效');
         if (metadata.platform !== platform || metadata.arch !== arch) return publish({ status: 'available', supported: false, error: `最新安装包不支持当前平台或架构（${platform}/${arch}），请前往发布页面查看。` });
-        const installerName = `ssh-log-viewer-${version.version}-${target.name}.${target.extension}`;
+        const installerName = `ssh-log-viewer-${version.version}-${targetName}.${target.extension}`;
         if (metadata.asset !== installerName || !validSize(metadata.size, MAX_INSTALLER_BYTES) || typeof metadata.sha256 !== 'string' || !/^[a-fA-F0-9]{64}$/.test(metadata.sha256)) throw new Error('更新安装包的校验信息无效');
         const installerAsset = singleAsset(release.assets, installerName);
         if (!installerAsset || installerAsset.size !== metadata.size) throw new Error('发布资源与更新元数据的安装包大小不一致');

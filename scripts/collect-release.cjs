@@ -7,6 +7,16 @@ const targets = {
   windows: { extension: '.exe', platform: 'win32', arches: ['x64', 'arm64', 'ia32'] },
   macos: { extension: '.dmg', platform: 'darwin', arches: ['x64', 'arm64'] },
 };
+const releaseVariants = [
+  { target: 'linux', arch: 'x64' },
+  { target: 'windows', arch: 'x64' },
+  { target: 'macos', arch: 'arm64' },
+  { target: 'macos', arch: 'x64' },
+];
+
+function releaseStem(target, version, arch) {
+  return `ssh-log-viewer-${version}-${target}${target === 'macos' && arch === 'x64' ? '-x64' : ''}`;
+}
 
 function validateVersion(version) {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version || '');
@@ -37,14 +47,15 @@ function collect(target, version, arch = process.arch) {
   }
   fs.rmSync(artifactDir, { recursive: true, force: true });
   fs.mkdirSync(artifactDir, { recursive: true });
-  const asset = `ssh-log-viewer-${version}-${target}${extension}`;
+  const stem = releaseStem(target, version, arch);
+  const asset = `${stem}${extension}`;
   const output = path.join(artifactDir, asset);
   fs.copyFileSync(files[0], output);
   const bytes = fs.readFileSync(output);
   const hash = sha256(bytes);
   fs.writeFileSync(`${output}.sha256`, `${hash}  ${asset}\n`);
   const metadata = { schemaVersion: 1, version, platform, arch, asset, size: bytes.length, sha256: hash };
-  fs.writeFileSync(path.join(artifactDir, `ssh-log-viewer-${version}-${target}.update.json`), `${JSON.stringify(metadata, null, 2)}\n`);
+  fs.writeFileSync(path.join(artifactDir, `${stem}.update.json`), `${JSON.stringify(metadata, null, 2)}\n`);
   console.log(`Collected ${output} (${arch}) with update metadata`);
 }
 
@@ -56,4 +67,4 @@ if (require.main === module) {
   collect(target, version, arch);
 }
 
-module.exports = { targets, validateVersion, validateArch, sha256 };
+module.exports = { targets, releaseVariants, releaseStem, validateVersion, validateArch, sha256 };
