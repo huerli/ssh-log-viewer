@@ -12,7 +12,7 @@ function summary(update: UpdateState) {
     case 'available': return `发现新版本 v${update.latestVersion}`;
     case 'downloading': return `正在下载更新 · ${Math.floor(update.progress || 0)}%`;
     case 'ready': return '更新已下载并通过校验';
-    case 'installing': return '正在打开安装程序…';
+    case 'installing': return update.platform === 'linux' ? '正在安装更新，请完成系统授权；安装成功后退出…' : '正在打开安装程序…';
     case 'error': return '更新操作失败，可重试';
     default: return '尚未检查更新';
   }
@@ -56,7 +56,7 @@ export function UpdateControl({ settingsOpen }: { settingsOpen: boolean }) {
       {update?.status === 'downloading' && <div className="update-download-progress"><progress aria-label="更新下载进度" max={100} value={update.progress || 0} /><small>{bytes(update.downloadedBytes)} / {bytes(update.size)}</small></div>}
       {update?.notes && <section className="update-release-notes"><strong>更新说明</strong><pre>{update.notes}</pre></section>}
       {update?.isPackaged === false && <p className="hint update-source-hint">当前为源码运行：安装发行版不会覆盖此工作区，安装后请从应用菜单启动新版本。</p>}
-      {hasInstaller && <p className="hint">安装会退出应用并断开 SSH / Telnet；跳板机 localhost 端口按断开规则释放。安装完成后重新启动应用。</p>}
+      {hasInstaller && <p className="hint">Linux 需完成系统管理员授权，安装成功后退出；其他平台打开系统安装程序后退出。退出会断开 SSH / Telnet；跳板机 localhost 端口按断开规则释放。安装完成后重新启动应用。</p>}
       {autoCheck}
       <div className="inline update-actions">
         <button disabled={busy || update?.status === 'ready'} onClick={() => void run(() => api.checkForUpdates())}>检查更新</button>

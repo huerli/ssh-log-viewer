@@ -374,6 +374,10 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .telnet-sidebar .telnet-controls input.telnet-host,
 .telnet-sidebar .telnet-controls input.telnet-port { width: 0; min-width: 0; flex: 1; }
 .telnet-sidebar .panel-title span { overflow-wrap: anywhere; max-width: 150px; font-size: 11px; }
+.telnet-sidebar .panel-title .telnet-connection-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 12px; background: var(--control); color: var(--muted); letter-spacing: 0; }
+.telnet-connection-status::before { content: ''; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: currentColor; }
+.telnet-sidebar .panel-title .telnet-connection-status.connected { color: var(--success); border-color: color-mix(in srgb, var(--success) 50%, var(--border)); background: color-mix(in srgb, var(--success) 12%, var(--panel)); }
+.telnet-sidebar .panel-title .telnet-connection-status.connecting { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); background: color-mix(in srgb, var(--warning) 12%, var(--panel)); }
 
 .unified-terminal.show-log .shared-telnet-display .telnet-output,
 .unified-terminal.show-log .shared-telnet-display .telnet-search { display: flex; }
