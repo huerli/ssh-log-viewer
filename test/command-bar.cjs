@@ -44,7 +44,7 @@ const os = require('node:os');
     await page.mouse.click(point.x, point.y, { button: 'right' });
     const menu = page.getByRole('menu', { name: '按钮栏操作', exact: true });
     await menu.waitFor();
-    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['新增按钮…', '调整分组…']);
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['新增按钮…', '导入配置…', '调整分组…']);
     assert.equal(await page.getByRole('dialog', { name: '按钮栏配置', exact: true }).count(), 0, 'whitespace context menu must not open full configuration');
     return menu;
   }
@@ -79,7 +79,7 @@ const os = require('node:os');
   try {
     await fs.mkdir(path.join(temp, 'config'), { recursive: true });
     await fs.mkdir(artifacts, { recursive: true });
-    await fs.writeFile(path.join(temp, 'config/settings.json'), JSON.stringify({ autoCheckUpdates: false }));
+    await fs.writeFile(path.join(temp, 'config/settings.json'), JSON.stringify({ autoCheckUpdates: false, sshEnabled: true, telnetEnabled: true }));
     await launch();
     const seed = {
       telnet: [

@@ -663,7 +663,13 @@ const handlers = {
     }
     return existing.sort((a, b) => a.localeCompare(b));
   },
-  settings: () => ({ sshLogMode: config.sshLogMode || 'printable', telnetLogMode: config.telnetLogMode || 'printable', searchHistory: config.searchHistory, profiles: config.profiles, bookmarks: config.bookmarks, theme: config.theme, logFont: config.logFont, version: app.getVersion(), selectedProfile: config.lastProfileName, directories: config.directories, jumpProfiles: config.jumpProfiles, selectedJump: config.lastJumpName, localPaths: config.lastLocalPaths || [] }),
+  settings: () => ({ sshLogMode: config.sshLogMode || 'printable', telnetLogMode: config.telnetLogMode || 'printable', sshEnabled: config.sshEnabled !== false, telnetEnabled: config.telnetEnabled !== false, searchHistory: config.searchHistory, profiles: config.profiles, bookmarks: config.bookmarks, theme: config.theme, logFont: config.logFont, version: app.getVersion(), selectedProfile: config.lastProfileName, directories: config.directories, jumpProfiles: config.jumpProfiles, selectedJump: config.lastJumpName, localPaths: config.lastLocalPaths || [] }),
+  saveFeatureEnabled: async (feature, enabled) => {
+    if (feature !== 'ssh' && feature !== 'telnet') throw new Error('未知功能');
+    config[feature + 'Enabled'] = Boolean(enabled);
+    await save();
+    return config[feature + 'Enabled'];
+  },
   loadProfile: async name => {
     const profile = config.profiles.find(p => p.name === name);
     if (!profile) throw new Error('连接配置不存在');
@@ -1118,7 +1124,7 @@ const handlers = {
 app.whenReady().then(async () => {
   configPath = path.join(app.getPath('userData'), 'settings.json');
   try { config = JSON.parse(await fsp.readFile(configPath, 'utf8')); } catch { config = {}; }
-  config = { profiles: [], hosts: {}, bookmarks: {}, theme: 'midnight', sshLogMode: 'printable', ...config };
+  config = { profiles: [], hosts: {}, bookmarks: {}, theme: 'midnight', sshLogMode: 'printable', sshEnabled: false, telnetEnabled: true, ...config };
   const fontSettings = await logFont;
   try { config.logFont = fontSettings.validateLogFont(config.logFont); }
   catch { config.logFont = { ...fontSettings.defaultLogFont }; }

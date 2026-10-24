@@ -46,13 +46,14 @@ declare global {
       telnetWrite(text: string): Promise<void>;
       telnetClose(): Promise<void>;
       downloadedFiles(): Promise<string[]>;
-      settings(): Promise<{ sshLogMode?: string; telnetLogMode?: string; searchHistory?: string[]; profiles: Profile[]; theme?: string; logFont?: LogFont; version?: string; selectedProfile?: string; directories: { download: string; extract: string }; jumpProfiles: JumpProfile[]; selectedJump?: string; localPaths?: string[] }>;
+      settings(): Promise<{ sshLogMode?: string; telnetLogMode?: string; sshEnabled?: boolean; telnetEnabled?: boolean; searchHistory?: string[]; profiles: Profile[]; theme?: string; logFont?: LogFont; version?: string; selectedProfile?: string; directories: { download: string; extract: string }; jumpProfiles: JumpProfile[]; selectedJump?: string; localPaths?: string[] }>;
       openFolder(path: string): Promise<void>;
       exportSearchResults(data: SearchResult & { query: string; file?: string; regex: boolean; caseSensitive: boolean; partial: boolean }): Promise<{ path: string; count: number } | null>;
       copyText(text: string): Promise<void>;
       saveSearchHistory(history: string[]): Promise<string[]>;
       saveTheme(theme: string): Promise<string>;
       saveLogFont(font: LogFont): Promise<LogFont>;
+      saveFeatureEnabled(feature: 'ssh' | 'telnet', enabled: boolean): Promise<boolean>;
       deleteProfile(name: string): Promise<Profile[] | null>;
       deleteJumpProfile(name: string): Promise<{ profiles: Profile[]; jumpProfiles: JumpProfile[] } | null>;
       saveProfile(profile: Profile): Promise<Profile[]>;
