@@ -25,14 +25,18 @@ export function renderCommand(text, values) {
   });
 }
 
-// Moderately saturated colors stay coherent across light and dark themes.
-export const commandButtonColors = Object.freeze([
-  '#5b8def', '#48a999', '#8b7ac9', '#d784a6', '#d99a58',
-  '#5ba8b7', '#7997c2', '#b18bc2', '#96a866', '#c97e74',
-]);
+// Sample uniformly from the available RGB colors, excluding saved/current colors.
 export function randomCommandColor(usedColors = []) {
-  const used = usedColors.filter(color => typeof color === 'string').map(color => color.toLowerCase());
-  const unused = commandButtonColors.filter(color => !used.includes(color));
-  const candidates = unused.length ? unused : commandButtonColors.filter(color => color !== used.at(-1));
-  return candidates[Math.floor(Math.random() * candidates.length)];
+  const blocked = [...new Set(usedColors
+    .filter(color => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color))
+    .map(color => parseInt(color.slice(1), 16)))].sort((a, b) => a - b);
+  const available = 0x1000000 - blocked.length;
+  if (!available) throw new Error('没有可用的按钮颜色');
+  let value = Math.floor(Math.random() * available);
+  // Map the random index onto the RGB range while skipping excluded colors.
+  for (const excluded of blocked) {
+    if (excluded > value) break;
+    value++;
+  }
+  return '#' + value.toString(16).padStart(6, '0');
 }

@@ -58,7 +58,7 @@ button{background:var(--control);color:var(--text);border:1px solid var(--border
 button:hover{background:var(--hover);border-color:var(--border)}
 button:disabled{opacity:.4;cursor:default}
 .primary{background:var(--accent);border-color:var(--accent);color:white}
-.primary:hover{background:var(--accent-hover)}
+.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
 input,select{background:var(--input);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:0;padding:8px 9px;outline:none}
 input:focus,select:focus{border-color:var(--accent-text)}
 input[type=checkbox]{accent-color:var(--accent)}
@@ -479,7 +479,26 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .command-config-item .inline{flex-wrap:nowrap}
 .command-inline-editor{margin:0;padding:12px;border-radius:8px;background:var(--input)}
 .command-inline-editor>strong{display:block;font-size:12px;margin-bottom:10px}
-.command-edit-form{display:grid;grid-template-columns:minmax(140px,1fr) repeat(5,auto);align-items:end;gap:10px}
+.command-edit-form{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:14px}
+.command-edit-actions{grid-column:1 / -1;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+/* Override the shared settings sizing using the dialog's actual available width. */
+.settings-backdrop>.directory-settings.command-config-dialog{width:min(920px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:24px;gap:18px;min-width:0;container-type:inline-size}
+.command-config-dialog>*{min-width:0}
+.settings-backdrop>.directory-settings.command-config-dialog:not(.app-settings)>.panel-title{margin:0;padding-bottom:16px;gap:16px}
+.settings-backdrop>.command-config-dialog>.inline{flex-wrap:wrap;margin:0;gap:8px}
+.settings-backdrop>.directory-settings.command-config-dialog:not(.app-settings)>.inline button{margin-top:0}
+.settings-backdrop>.directory-settings.command-config-dialog:not(.app-settings)>form.inline input{flex:1 1 180px;width:auto;margin:0}
+.command-config-dialog .command-config-list{flex:1 0 auto;min-height:110px;max-height:28vh}
+.command-config-item .inline{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr) auto auto;gap:8px}
+.command-config-item .command-color-preview{overflow-wrap:anywhere}
+.command-config-item code{white-space:pre-wrap;overflow-wrap:anywhere}
+.settings-backdrop>.command-config-dialog .command-color-picker input[type=color]{width:42px;min-height:36px;margin:0;flex:none}
+.command-inline-editor small{display:block;margin-top:12px;line-height:1.6;overflow-wrap:anywhere}
+@container(max-width:560px){
+  .command-config-item .inline{grid-template-columns:minmax(0,1fr) auto auto}
+  .command-config-item code{grid-column:1 / -1;grid-row:2}
+  .command-edit-form .command-name-field{grid-column:auto}
+}
 .command-edit-form label{font-size:12px;display:flex;flex-direction:column;gap:6px;min-width:0}
 .command-text-field{grid-column:1 / -1;grid-row:1}
 .command-edit-form input:not([type=color]),.command-edit-form textarea{width:100%;min-width:0;box-sizing:border-box}
@@ -525,9 +544,8 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 #update-settings-slot > button { min-height: 38px; border-radius: 8px; text-align: left; }
 .update-source-hint { border-left: 2px solid var(--border); padding-left: 10px; }
 
-.quick-command-dialog { width: min(660px, 92vw); }
-.quick-command-dialog > label { display: grid; gap: 6px; font-size: 12px; }
-.quick-command-dialog > small, .command-groups-dialog > small { color: var(--muted); line-height: 1.6; }
+.single-command-dialog > label { display: grid; gap: 6px; font-size: 12px; }
+.single-command-dialog > small, .command-groups-dialog > small { color: var(--muted); line-height: 1.6; }
 .command-groups-dialog { display: flex; flex-direction: column; width: min(720px, 92vw); max-height: 90vh; padding: 0; box-sizing: border-box; overflow: hidden; }
 .command-groups-heading { flex-shrink: 0; margin: 0; padding: 20px 24px; border-bottom: 1px solid var(--border); gap: 16px; }
 .command-groups-heading small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
@@ -551,10 +569,10 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .command-groups-empty { margin: 20px 0; color: var(--muted); font-size: 12px; }
 @media(max-width:680px) { .command-group-row { grid-template-columns: 1fr auto auto auto; } .command-group-row > label { grid-column: 1 / -1; } .command-groups-heading, .command-groups-footer { padding: 16px; } .command-groups-body { padding: 0 16px 16px; } }
 
-.quick-command-dialog .command-edit-form { grid-template-columns: minmax(140px, 1fr) repeat(3, auto); }
+.single-command-dialog .command-edit-form { grid-template-columns: minmax(0, 1fr) auto; }
+.single-command-dialog .command-name-field { grid-column: auto; }
 .quick-command-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .quick-command-actions button { min-width: 72px; }
-@media(max-width:680px) { .quick-command-dialog .command-edit-form { grid-template-columns: 1fr 1fr; } }
 
 .new-command-group-dialog { display: flex; flex-direction: column; gap: 20px; width: min(440px, 92vw); padding: 24px; box-sizing: border-box; }
 .new-command-group-dialog > .panel-title { margin: 0; }
@@ -576,3 +594,10 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .settings-card .feature-toggle input:checked+span::after{transform:translateX(18px)}
 .settings-card .feature-toggle input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
 .settings-card .terminal-settings-slot{margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}
+
+.settings-backdrop>.directory-settings.single-command-dialog{width:min(640px,calc(100vw - 32px))}
+
+.command-buttons button[draggable=true]{cursor:grab}
+.command-buttons button[draggable=true]:active{cursor:grabbing}
+.command-buttons button[data-drop-position=before]{box-shadow:inset 4px 0 var(--accent-text)}
+.command-buttons button[data-drop-position=after]{box-shadow:inset -4px 0 var(--accent-text)}

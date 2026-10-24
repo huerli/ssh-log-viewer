@@ -29,16 +29,24 @@ test('variable commands prompt once per name and substitute literally', async ()
   assert.throws(() => renderCommand(text, {'map文件名':'a\nb'}));
 });
 
-test('new button colors use the palette without repeats until exhausted', async () => {
-  const { randomCommandColor, commandButtonColors } = await import('../shared/telnet-commands.mjs');
-  const used = [];
-  for (let i = 0; i < commandButtonColors.length; i++) {
-    const color = randomCommandColor(used);
-    assert.match(color, /^#[0-9a-f]{6}$/);
-    assert.ok(commandButtonColors.includes(color));
-    assert.ok(!used.includes(color));
-    used.push(color);
+test('random button colors span RGB and exclude existing colors regardless of case', async () => {
+  const { randomCommandColor } = await import('../shared/telnet-commands.mjs');
+  const originalRandom = Math.random;
+  try {
+    for (const [random, expected] of [[0, '#000000'], [0.5, '#800000'], [1 - Number.EPSILON, '#ffffff']]) {
+      Math.random = () => random;
+      assert.equal(randomCommandColor(), expected);
+    }
+    Math.random = () => 0;
+    assert.equal(randomCommandColor(['#000000', '#000001', '#00000A', '#00000a', 'invalid']), '#000002');
+    const used = [];
+    for (let i = 0; i < 32; i++) {
+      const color = randomCommandColor(used);
+      assert.match(color, /^#[0-9a-f]{6}$/);
+      assert.ok(!used.includes(color));
+      used.push(color);
+    }
+  } finally {
+    Math.random = originalRandom;
   }
-  assert.notEqual(randomCommandColor(used), used.at(-1));
-  assert.equal(randomCommandColor(commandButtonColors.filter(color => color !== commandButtonColors[0]).map(color => color.toUpperCase())), commandButtonColors[0]);
 });

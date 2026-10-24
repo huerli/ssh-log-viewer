@@ -54,7 +54,13 @@ const os = require('node:os');
     const dialog = page.getByRole('dialog', { name: '新增命令按钮', exact: true });
     await dialog.waitFor();
     assert.equal(await page.getByRole('dialog', { name: '按钮栏配置', exact: true }).count(), 0);
-    const color = await dialog.getByLabel('命令按钮颜色', { exact: true }).inputValue();
+    let color = await dialog.getByLabel('命令按钮颜色', { exact: true }).inputValue();
+    for (let index = 0; index < 4; index++) {
+      await dialog.getByRole('button', { name: '换个颜色', exact: true }).click();
+      const nextColor = await dialog.getByLabel('命令按钮颜色', { exact: true }).inputValue();
+      assert.notEqual(nextColor, color, 'changing color must always produce a new color');
+      color = nextColor;
+    }
     assert.match(color, /^#[0-9a-f]{6}$/i, 'new buttons must start with a real color');
     await dialog.getByLabel('命令名称', { exact: true }).fill(name);
     await dialog.getByLabel('命令内容', { exact: true }).fill(text);
@@ -111,16 +117,43 @@ const os = require('node:os');
     assert.equal(saved[0].commands[1].color, firstColor);
     assert.equal(saved[0].commands[2].color, secondColor);
 
-    // Individual command editing retains its existing full editor and selected color.
+    // Right-click editing exposes only the selected command and preserves other data.
     await command('随机按钮一').click({ button: 'right' });
     const buttonMenu = page.getByRole('menu', { name: '命令按钮操作', exact: true });
     assert.equal(await page.getByRole('menu', { name: '按钮栏操作', exact: true }).count(), 0);
     await buttonMenu.getByRole('menuitem', { name: '编辑按钮…', exact: true }).click();
-    const full = page.getByRole('dialog', { name: '按钮栏配置', exact: true });
+    const full = page.getByRole('dialog', { name: '编辑命令按钮', exact: true });
+    const beforeEdit = await groups('telnet');
+    assert.equal(await full.getByLabel('按钮所属分组').isDisabled(), true);
+    assert.equal(await full.locator('.command-config-list, .command-group-create').count(), 0);
+    assert.equal(await page.getByRole('dialog', { name: '按钮栏配置', exact: true }).count(), 0);
     assert.equal(await full.getByLabel('命令按钮颜色', { exact: true }).inputValue(), firstColor);
+    // The editor must fit both desktop and narrow windows without clipping controls.
+    const originalViewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+    for (const width of [1100, 545, 360]) {
+      await page.setViewportSize({ width, height: 780 });
+      assert.equal(await full.evaluate(dialog => dialog.scrollWidth <= dialog.clientWidth), true, `dialog overflows at ${width}px`);
+      const clipped = await full.locator('.command-edit-form input, .command-edit-form textarea, .command-edit-form button').evaluateAll(elements => elements.filter(element => {
+        const bounds = element.getBoundingClientRect();
+        const dialog = element.closest('[role=dialog]').getBoundingClientRect();
+        return bounds.left < dialog.left || bounds.right > dialog.right;
+      }).map(element => element.textContent || element.getAttribute('aria-label')));
+      assert.deepEqual(clipped, [], `editor controls clipped at ${width}px`);
+      if (width === 545) await page.screenshot({ path: path.join(artifacts, 'command-bar-editor-narrow.png') });
+    }
+    await page.setViewportSize(originalViewport);
     await full.getByLabel('命令名称', { exact: true }).fill('随机按钮一已编辑');
     await full.getByRole('button', { name: '保存修改', exact: true }).click();
-    await full.getByRole('button', { name: '关闭按钮栏配置', exact: true }).click();
+    await full.waitFor({ state: 'hidden' });
+    const expectedEdit = structuredClone(beforeEdit);
+    expectedEdit[0].commands[1].name = '随机按钮一已编辑';
+    assert.deepEqual(await groups('telnet'), expectedEdit, 'editing must change only the selected command');
+    await command('随机按钮一已编辑').click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '编辑按钮…', exact: true }).click();
+    await full.getByLabel('命令名称', { exact: true }).fill('取消的修改');
+    await full.getByRole('button', { name: '取消', exact: true }).click();
+    await full.waitFor({ state: 'hidden' });
+    assert.deepEqual(await groups('telnet'), expectedEdit, 'cancelling edits must preserve all commands');
     await command('随机按钮一已编辑').waitFor();
 
     await selectedGroup().selectOption('__add__');
@@ -159,6 +192,19 @@ const os = require('node:os');
     assert.deepEqual((await groups('telnet')).map(group => group.id), ['manual', addedId]);
     await manager.getByRole('button', { name: '关闭分组调整', exact: true }).click();
     assert.equal(await selectedGroup().inputValue(), addedId);
+    // Dragging changes only the current group's order and survives restart.
+    await selectedGroup().selectOption('manual');
+    const beforeDrag = await groups('telnet');
+    await command('原有按钮').dragTo(command('随机按钮二'), { targetPosition: { x: 5, y: 10 } });
+    const expectedDrag = structuredClone(beforeDrag);
+    const dragged = expectedDrag[0].commands.shift();
+    expectedDrag[0].commands.splice(1, 0, dragged);
+    assert.deepEqual(await groups('telnet'), expectedDrag, 'drop before target must reorder only the current group');
+    await command('随机按钮一已编辑').dragTo(command('随机按钮二'), { targetPosition: { x: (await command('随机按钮二').boundingBox()).width - 5, y: 10 } });
+    const draggedAfter = expectedDrag[0].commands.shift();
+    expectedDrag[0].commands.push(draggedAfter);
+    assert.deepEqual(await groups('telnet'), expectedDrag, 'drop after target must place the command after it');
+    assert.deepEqual(await toolbar().locator('.command-buttons > button').allTextContents(), expectedDrag[0].commands.map(command => command.name));
     const finalTelnet = await groups('telnet');
 
     await mode('SSH');

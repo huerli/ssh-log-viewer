@@ -39,7 +39,7 @@ async function eventually(check, message, timeout = 10000) {
     await fs.mkdir(path.join(temp, 'remote/system/log'), { recursive: true });
     await fs.writeFile(path.join(temp, 'remote/system/log/fixture.log'), 'SFTP remains available\n');
     await fs.mkdir(path.join(temp, 'config'));
-    await fs.writeFile(path.join(temp, 'config/settings.json'), JSON.stringify({ directories: { download: path.join(temp, 'downloads'), extract: path.join(temp, 'extracted') } }));
+    await fs.writeFile(path.join(temp, 'config/settings.json'), JSON.stringify({ sshEnabled: true, telnetEnabled: true, autoCheckUpdates: false, directories: { download: path.join(temp, 'downloads'), extract: path.join(temp, 'extracted') } }));
     ssh = await createServer(path.join(temp, 'remote'), shellOptions);
     telnet = net.createServer(socket => {
       sockets.add(socket); const session = { input: '', closed: false }; telnetSessions.push(session);
@@ -67,11 +67,11 @@ async function eventually(check, message, timeout = 10000) {
     async function editCommand(buttonName, newName, command) {
       await page.getByRole('button', { name: buttonName, exact: true }).click({ button: 'right' });
       await page.getByRole('menuitem', { name: '编辑按钮…', exact: true }).click();
-      const dialog = page.getByRole('dialog', { name: '按钮栏配置', exact: true });
+      const dialog = page.getByRole('dialog', { name: '编辑命令按钮', exact: true });
       await dialog.getByLabel('命令名称', { exact: true }).fill(newName);
       await dialog.getByLabel('命令内容', { exact: true }).fill(command);
       await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
-      await dialog.getByRole('button', { name: '关闭按钮栏配置', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
     }
     async function settingsCard(protocol) {
       await header.getByRole('button', { name: '设置', exact: true }).click();
@@ -84,6 +84,8 @@ async function eventually(check, message, timeout = 10000) {
       await input.fill('');
     }
 
+    // Wait for persisted feature settings before inspecting connection controls.
+    await header.getByRole('button', { name: 'SSH 输出', exact: true }).waitFor();
     // Establish the existing file connection through its UI, so SSH terminal enablement is real.
     if (!await page.getByRole('region', { name: '连接设置', exact: true }).isVisible()) await page.locator('.connection-actions').getByRole('button', { name: '⚙ 设置', exact: true }).click();
     const connection = page.getByRole('region', { name: '连接设置', exact: true });
@@ -92,7 +94,10 @@ async function eventually(check, message, timeout = 10000) {
     await connection.getByLabel('用户名', { exact: true }).fill('tester');
     await connection.getByLabel('密码', { exact: true }).fill('fixture-password');
     await mode('SSH');
-    assert.equal(await page.locator('#telnet-connection-slot .telnet-sidebar').count(), 0, 'SSH must reuse upper connection management without a second sidebar');
+    assert.equal(await page.locator('#telnet-connection-slot .telnet-sidebar').isVisible(), true, 'Telnet connection information must remain visible in SSH mode');
+    await page.locator('#telnet-connection-slot').getByRole('button', { name: '⚙ 设置', exact: true }).click();
+    await page.getByRole('dialog', { name: 'Telnet 连接设置', exact: true }).waitFor();
+    await page.getByRole('dialog', { name: 'Telnet 连接设置', exact: true }).getByRole('button', { name: '取消', exact: true }).click();
     await page.locator('.connection-actions').getByRole('button', { name: '连接', exact: true }).click();
     await page.locator('.connection-pill.connected').waitFor();
     assert.equal(await page.getByRole('button', { name: '设备信息', exact: true }).isVisible(), false);
@@ -144,11 +149,6 @@ async function eventually(check, message, timeout = 10000) {
     await eventually(() => first.input.endsWith('printf ssh-custom\r'), 'custom SSH button must remain raw SSH');
     console.log('PASS: SSH shell/PTY, Unicode/ANSI, input/button bytes, raw keys, resize, no double echo, logs and export');
 
-    await mode('Telnet');
-    await eventually(() => first.closed, 'switch to Telnet must close SSH shell');
-    assert.equal(ssh.count, 1, 'file connection must remain open');
-    assert.ok((await page.evaluate(() => window.viewer.list('/system/log'))).entries.some(item => item.name === 'fixture.log'), 'SFTP must remain usable');
-    assert.equal(await page.getByRole('button', { name: 'SSH 独立按钮', exact: true }).isVisible(), false);
     const sidebar = page.locator('#telnet-connection-slot');
     await sidebar.getByRole('button', { name: '⚙ 设置', exact: true }).click();
     const telnetSettings = page.getByRole('dialog', { name: 'Telnet 连接设置', exact: true });
@@ -156,6 +156,12 @@ async function eventually(check, message, timeout = 10000) {
     await telnetSettings.getByLabel('端口', { exact: true }).fill(String(telnet.address().port));
     await telnetSettings.getByRole('button', { name: '保存', exact: true }).click();
     await sidebar.getByRole('button', { name: '连接', exact: true }).click();
+    await eventually(async () => await header.getByRole('button', { name: 'Telnet 输出', exact: true }).getAttribute('aria-pressed') === 'true', 'connecting from SSH must show Telnet output');
+    await eventually(() => first.closed, 'switch to Telnet must close SSH shell');
+    assert.equal(ssh.count, 1, 'file connection must remain open');
+    assert.ok((await page.evaluate(() => window.viewer.list('/system/log'))).entries.some(item => item.name === 'fixture.log'), 'SFTP must remain usable');
+    assert.equal(await page.getByRole('button', { name: 'SSH 独立按钮', exact: true }).isVisible(), false);
+
     await eventually(() => telnetSessions[0]?.input.includes('send dev-get-info\r\n'), 'direct Telnet must send initial device information request');
     await searchOutput('Telnet', 'Telnet fixture ready');
     await page.getByRole('button', { name: '设备信息', exact: true }).click();
