@@ -103,89 +103,112 @@ async function getTelnetToken(address, login) {
   if (result.code !== 0 || typeof result.data !== 'string' || !result.data.trim()) throw new Error('获取 TELNET 专用令牌失败，请重新登录');
   return result.data;
 }
-const deviceCatalogs = new WeakMap();
 async function searchDevices(address, login, keyword) {
-  const query = String(keyword || '').trim().toLowerCase();
+  const query = String(keyword || '').trim();
   if (!query) return [];
-  // Use the backend's lightweight fuzzy device-number endpoint while typing.
-  if (/^\d+$/.test(query)) {
-    const t = String(Math.floor(Date.now() / 1000));
-    const url = new URL(normalizeWebAddress(address) + '/common/device/match/' + encodeURIComponent(query));
-    url.search = new URLSearchParams({ t }).toString();
-    const signature = crypto.createHash('md5').update('/device/match/' + query + '?t=' + t).digest('hex');
-    const headers = { Authorization: 'Bearer ' + login.token, appCode: 'teee', Signature: signature };
+  address = normalizeWebAddress(address);
+  const request = async (path, params, label) => {
+    const url = new URL(address + path);
+    url.search = new URLSearchParams({ t: String(Math.floor(Date.now() / 1000)), ...params }).toString();
+    const signaturePath = path.replace(/^\/(?:common|jdf)/, '') + url.search;
+    const headers = { Authorization: 'Bearer ' + login.token, appCode: 'teee', Signature: crypto.createHash('md5').update(signaturePath).digest('hex') };
     if (login.tenantId != null) headers.tenant_id = String(login.tenantId);
-    const response = await fetch(url, { headers, signal: AbortSignal.timeout(30000) }).catch(() => { throw new Error('设备搜索请求失败'); });
-    if (!response.ok) throw new Error('设备搜索 HTTP ' + response.status);
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(30000) }).catch(() => { throw new Error(label + '请求失败'); });
+    if (!response.ok) throw new Error(label + ' HTTP ' + response.status);
     const result = await response.json();
-    if (result.code !== 0) throw new Error('设备搜索失败，请重新登录');
-    if (!Array.isArray(result.data)) throw new Error('设备列表格式无效');
-    const matches = result.data.filter(item => item?.value != null).map(item => ({ number: String(item.value), name: '', online: false })).slice(0, 50);
-    // The lightweight match endpoint only returns device numbers. Enrich a
-    // small result set with the exact terminal-device records so short input
-    // such as "3311" also shows the actual online state.
-    if (matches.length > 0 && matches.length <= 20) {
-      await Promise.all(matches.map(async match => {
+    if (result.code !== 0) throw new Error(label + '失败，请重新登录');
+    return result.data;
+  };
+  const terminalDevices = async filter => {
+    const records = [];
+    let page = 1;
+    while (true) {
+      const data = await request('/jdf/terminal-device/page', { pageNum: String(page), pageSize: '10', ...filter, matter: 'false' }, '设备搜索');
+      if (!Array.isArray(data?.records)) throw new Error('设备列表格式无效');
+      records.push(...data.records);
+      const pages = Number(data.pages) || Math.ceil(Number(data.total) / 10);
+      if (!data.records.length || (pages > 0 ? page >= pages : data.records.length < 10)) break;
+      page++;
+    }
+    return records;
+  };
+  const locomotiveNames = new Map();
+  const locomotiveName = async record => {
+    const name = String(record.locoNumber ?? '').trim();
+    if (name) return name;
+    const bindId = String(record.bindId ?? '').trim();
+    if (!bindId || Number(bindId) <= 0) return '';
+    let pending = locomotiveNames.get(bindId);
+    if (!pending) {
+      pending = request('/jdf/locomotive/' + encodeURIComponent(bindId), {}, '车号详情查询')
+        .then(data => String(data?.locoNumber ?? '').trim());
+      locomotiveNames.set(bindId, pending);
+    }
+    return pending;
+  };
+  // Nameplates and device names are not locomotive numbers.
+  const toMatch = (record, name = '') => ({ number: String(record.deviceNumber), name: String(name || record.locoNumber || '').trim(), online: Number(record.state) === 1 });
+  const byDeviceNumber = async () => {
+    const data = await request('/common/device/match/' + encodeURIComponent(query), {}, '设备搜索');
+    if (!Array.isArray(data)) throw new Error('设备列表格式无效');
+    const matches = [...new Set(data.filter(item => item?.value != null && String(item.value).trim()).map(item => String(item.value)))].slice(0, 50).map(number => ({ number, name: '', online: false }));
+    // Bound concurrent lookups while resolving the real state for each device.
+    for (let start = 0; start < matches.length; start += 6) {
+      await Promise.all(matches.slice(start, start + 6).map(async match => {
         try {
-          const statusUrl = new URL(normalizeWebAddress(address) + '/jdf/terminal-device/page');
-          statusUrl.search = new URLSearchParams({ t: String(Math.floor(Date.now() / 1000)), pageNum: '1', pageSize: '10', deviceNumber: match.number, matter: 'false' }).toString();
-          const statusSignature = crypto.createHash('md5').update('/terminal-device/page' + statusUrl.search).digest('hex');
-          const statusHeaders = { Authorization: 'Bearer ' + login.token, appCode: 'teee', Signature: statusSignature };
-          if (login.tenantId != null) statusHeaders.tenant_id = String(login.tenantId);
-          const statusResponse = await fetch(statusUrl, { headers: statusHeaders, signal: AbortSignal.timeout(30000) });
-          if (statusResponse.ok) {
-            const statusResult = await statusResponse.json();
-            const record = statusResult.code === 0 && statusResult.data?.records?.[0];
-            if (record) match.online = Number(record.state) === 1;
+          const records = await terminalDevices({ deviceNumber: match.number });
+          const record = records.find(item => String(item?.deviceNumber) === match.number);
+          if (record) {
+            Object.assign(match, toMatch(record));
+            match.name = await locomotiveName(record);
           }
         } catch {
-          // Keep the match result usable if optional status enrichment fails.
+          // Keep the matched number and any resolved state if enrichment fails.
         }
       }));
     }
     return matches;
+  };
+  const byLocomotive = async () => {
+    const data = await request('/jdf/locomotive/allPage4queryForFaultReport', { locoNumber: query }, '车号搜索');
+    const locomotives = Array.isArray(data) ? data : data?.records;
+    if (!Array.isArray(locomotives)) throw new Error('车号列表格式无效');
+    const bindings = new Map();
+    for (const item of locomotives) {
+      // A locomotive ID is the terminal-device endpoint's bindId, never a device number.
+      const bindId = item?.id ?? item?.bindId;
+      if (bindId == null || !String(bindId).trim()) throw new Error('车号列表缺少绑定 ID');
+      const name = String(item.locoNumber ?? '').trim();
+      bindings.set(String(bindId), name);
+      if (name) locomotiveNames.set(String(bindId), Promise.resolve(name));
+    }
+    const entries = [...bindings];
+    const matches = [];
+    for (let start = 0; start < entries.length; start += 6) {
+      const results = await Promise.all(entries.slice(start, start + 6).map(async ([bindId, name]) => {
+        const records = await terminalDevices({ bindId });
+        return records.filter(item => item?.deviceNumber != null && String(item.deviceNumber).trim()).map(item => toMatch(item, name));
+      }));
+      matches.push(...results.flat());
+    }
+    return matches;
+  };
+  // Both interpretations run for every keyword; one unavailable endpoint must
+  // not hide usable devices returned by the other search.
+  const results = await Promise.allSettled([byDeviceNumber(), byLocomotive()]);
+  const matches = new Map();
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue;
+    for (const item of result.value) {
+      const previous = matches.get(item.number);
+      matches.set(item.number, { ...item, name: item.name || previous?.name || '' });
+    }
   }
-  let cached = deviceCatalogs.get(login);
-  if (!cached || cached.expires < Date.now()) {
-    const promise = (async () => {
-      const devices = new Map();
-      const fetchPage = async page => {
-        const url = new URL(normalizeWebAddress(address) + '/jdf/terminal-device/page');
-        url.search = new URLSearchParams({ t: String(Math.floor(Date.now() / 1000)), matter: 'false', pageNum: String(page), pageSize: '500' }).toString();
-        const signature = crypto.createHash('md5').update('/terminal-device/page' + url.search).digest('hex');
-        const headers = { Authorization: 'Bearer ' + login.token, appCode: 'teee', Signature: signature };
-        if (login.tenantId != null) headers.tenant_id = String(login.tenantId);
-        const response = await fetch(url, { headers, signal: AbortSignal.timeout(30000) }).catch(() => { throw new Error('设备搜索请求失败'); });
-        if (!response.ok) throw new Error('设备搜索 HTTP ' + response.status);
-        const result = await response.json();
-        if (result.code !== 0) throw new Error('设备搜索失败，请重新登录');
-        const records = result.data?.records;
-        if (!Array.isArray(records)) throw new Error('设备列表格式无效');
-        return { records, pages: Number(result.data.pages) };
-      };
-      const first = await fetchPage(1);
-      const pages = first.pages > 0 ? first.pages : (first.records.length < 500 ? 1 : 0);
-      const results = [first];
-      if (pages > 1) {
-        for (let start = 2; start <= pages; start += 6) {
-          const batch = await Promise.all(Array.from({ length: Math.min(6, pages - start + 1) }, (_, index) => fetchPage(start + index)));
-          results.push(...batch);
-        }
-      }
-      for (const result of results) {
-        for (const item of result.records) {
-          if (item.deviceNumber == null) continue;
-          const number = String(item.deviceNumber);
-          devices.set(number, { number, name: String(item.locoNumber || item.nameplate || item.name || ''), online: item.state === 1 });
-        }
-      }
-      return [...devices.values()];
-    })();
-    cached = { promise, expires: Date.now() + 60000 };
-    deviceCatalogs.set(login, cached);
-    promise.catch(() => { if (deviceCatalogs.get(login) === cached) deviceCatalogs.delete(login); });
+  if (!matches.size) {
+    const failed = results.find(result => result.status === 'rejected');
+    if (failed) throw failed.reason;
   }
-  return (await cached.promise).filter(item => item.number.toLowerCase().includes(query) || item.name.toLowerCase().includes(query)).slice(0, 50);
+  return [...matches.values()].slice(0, 50);
 }
 
 module.exports = { createWebTelnet, webLogin, getTelnetToken, normalizeWebAddress, searchDevices, normalizeWebInput };
