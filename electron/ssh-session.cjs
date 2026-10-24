@@ -86,7 +86,18 @@ async function connectSession(profile, { signal, verify, report = () => {}, onEr
     const client = await endpoint(profile, identity, '目标机器', sock);
     const sftp = await request(client, done => client.sftp((error, channel) => done(error ? new Error(`目标机器 SFTP 不可用：${error.message}`) : null, channel)), '目标机器 SFTP');
     cancelled();
-    return { client, jump, sftp, identity, close: () => { signal.removeEventListener('abort', abort); close(); } };
+    return {
+      client, jump, sftp, identity,
+      async releaseJumpPort() {
+        const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(String(profile.host).trim().toLowerCase());
+        if (!jump || !loopback) return { released: false, message: 'SSH 连接已断开' };
+        const port = Number(profile.port || 22);
+        if (port === Number(profile.jump.port || 22)) throw new Error('目标端口与跳板机 SSH 登录端口相同，无法释放');
+        report(`正在释放跳板机 localhost:${port} 监听端口…`);
+        return require('./jump-port.cjs').releaseJumpPort(jump, port);
+      },
+      close: () => { signal.removeEventListener('abort', abort); close(); },
+    };
   } catch (error) { signal.removeEventListener('abort', abort); close(); throw error; }
 }
 module.exports = { connectSession };

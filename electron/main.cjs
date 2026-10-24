@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, screen, clipboard, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, screen, clipboard, shell, net } = require('electron');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -35,8 +35,18 @@ if (process.env.VIEWER_DATA_DIR) {
   app.setPath('userData', process.env.VIEWER_DATA_DIR);
 }
 
-let win, config, configPath, cacheRoot, connection, sftp, connectionName, connectionOrigin, document, followTimer, credentials;
+let win, config, configPath, cacheRoot, connection, sftp, connectionName, connectionHost, connectionOrigin, document, followTimer, credentials;
 let followBusy = false, quitting = false;
+let updater, updateTimer, updateInterval;
+function updateSnapshot() { return { ...updater.state(), autoCheck: config.autoCheckUpdates !== false }; }
+function scheduleUpdateChecks() {
+  clearTimeout(updateTimer); clearInterval(updateInterval);
+  if (config.autoCheckUpdates === false) return;
+  const check = () => { void updater.check(); };
+  updateTimer = setTimeout(check, 1500);
+  updateInterval = setInterval(check, 6 * 60 * 60 * 1000);
+  updateTimer.unref?.(); updateInterval.unref?.();
+}
 const tasks = new Map();
 const glob = import('../shared/glob.mjs');
 const logFont = import('../shared/log-font.mjs');
@@ -85,13 +95,22 @@ function closeDocument() {
   }
   document = undefined;
 }
-function disconnect() {
+let disconnectWork = Promise.resolve();
+function disconnect({ releasePort = false } = {}) {
+  sshTerminal.close();
   batchSearch?.controller.abort(); batchSearch?.worker?.terminate(); batchSearch = undefined;
   closeDocument();
   for (const task of tasks.values()) task.abort();
-  sshAttempt?.abort(); sshAttempt = undefined;
-  const previous = sshSession; const client = connection; sshSession = undefined; connection = undefined; sftp = undefined;
-  previous?.close(); if (!previous) client?.destroy();
+  const attempt = sshAttempt; sshAttempt = undefined;
+  const previous = sshSession; const client = connection; sshSession = undefined; connection = undefined; sftp = undefined; connectionHost = undefined;
+  const close = () => { attempt?.abort(); previous?.close(); if (!previous) client?.destroy(); };
+  if (releasePort && previous) {
+    const work = disconnectWork.then(() => previous.releaseJumpPort()).finally(close);
+    disconnectWork = work.then(() => undefined, () => undefined);
+    return work;
+  }
+  close();
+  return disconnectWork;
 }
 async function namedJump(profile) {
   if (!profile.jumpName) return profile;
@@ -103,7 +122,7 @@ async function namedJump(profile) {
   return { ...profile, jump: { ...saved, enabled: Boolean(current?.enabled), password: enteredPassword ?? (saved.hasPassword ? await credentials.get(saved.credentialId) : ''), passphrase: current?.passphrase || '' } };
 }
 async function connect(profile) {
-  disconnect();
+  await disconnect();
   profile = await namedJump(profile);
   const controller = new AbortController(); sshAttempt = controller;
   let own;
@@ -143,6 +162,7 @@ async function connect(profile) {
     if (controller.signal.aborted) throw new Error('连接已取消');
     sshSession = own; connection = own.client; sftp = own.sftp;
     connectionName = `${profile.username}@${own.identity}`;
+    connectionHost = profile.host;
     connectionOrigin = { ...sourceIdentity(profile), host: archiveOwner(profile), owner: connectionName };
     const home = await callSftp('realpath', '.');
     if (controller.signal.aborted) throw new Error('连接已取消');
@@ -450,13 +470,20 @@ async function follow() {
 let telnetOutputFile, telnetOutputHost = '', telnetOutputQueue = Promise.resolve();
 let telnetConnectionLogQueue = Promise.resolve();
 let telnetConnectionContext = '';
-async function startTelnetOutput(target) {
+const telnetSetups = new Set();
+async function startTelnetOutput(target, token) {
   await telnetOutputQueue;
+  terminalModes.check(token);
   telnetOutputFile = undefined;
-  telnetOutputHost = String(target).replace(/[^a-zA-Z0-9.-]/g, '_');
-  telnetOutputFile = await require('./telnet-log.cjs').createTelnetLog(config.directories.download, target);
-  extractedFiles.add(telnetOutputFile);
+  const setup = require('./telnet-log.cjs').createTelnetLog(config.directories.download, target);
+  telnetSetups.add(setup);
+  let file;
+  try { file = await setup; } finally { telnetSetups.delete(setup); }
+  extractedFiles.add(file);
   event({ type: 'local-files-changed' });
+  terminalModes.check(token);
+  telnetOutputHost = String(target).replace(/[^a-zA-Z0-9.-]/g, '_');
+  telnetOutputFile = file;
 }
 function logTelnetConnection(message) {
   const line = `${new Date().toISOString()} ${telnetConnectionContext ? `[${telnetConnectionContext}] ` : ''}${message}\n`;
@@ -482,8 +509,55 @@ const telnetEmit = data => {
 const telnet = require('./telnet.cjs').createTelnet(telnetEmit);
 const webTelnet = require('./web-telnet.cjs').createWebTelnet(telnetEmit);
 let webTelnetActive = false, webLoginSession;
+const sshTerminal = require('./ssh-terminal.cjs').createSshTerminal({
+  getClient: () => connection,
+  getTarget: () => connectionHost || connectionName,
+  getRoot: () => config.directories.download,
+  getLogMode: () => config.sshLogMode || 'printable',
+  emit: event,
+  onLogFile: file => { extractedFiles.add(file); event({ type: 'local-files-changed' }); },
+});
+const terminalModes = require('./terminal-mode.cjs').createTerminalMode({
+  closeSsh: () => sshTerminal.close(),
+});
 const webPasswordId = (address, username) => 'web-telnet-' + crypto.createHash('sha256').update(JSON.stringify([require('./web-telnet.cjs').normalizeWebAddress(address), username.trim()])).digest('hex');
 const handlers = {
+  updateState: () => updateSnapshot(),
+  checkForUpdates: async () => { await updater.check(); return updateSnapshot(); },
+  downloadUpdate: async () => { await updater.download(); return updateSnapshot(); },
+  cancelUpdate: async () => { await updater.cancel(); return updateSnapshot(); },
+  installUpdate: async () => { await updater.install(); return updateSnapshot(); },
+  openUpdateRelease: async () => { await updater.openRelease(); return updateSnapshot(); },
+  revealUpdateInstaller: async () => { await updater.reveal(); return updateSnapshot(); },
+  saveUpdatePreferences: async enabled => {
+    if (typeof enabled !== 'boolean') throw new Error('自动更新检查选项无效');
+    config.autoCheckUpdates = enabled;
+    await save(); scheduleUpdateChecks();
+    const update = updateSnapshot(); event({ type: 'update-state', update });
+    return update;
+  },
+  terminalMode: mode => terminalModes.select(mode),
+  sshTerminalOpen: (cols, rows) => { terminalModes.select('ssh'); return sshTerminal.open(cols, rows); },
+  sshTerminalWrite: text => sshTerminal.write(text),
+  sshTerminalResize: (cols, rows) => sshTerminal.resize(cols, rows),
+  sshTerminalClose: () => sshTerminal.close(),
+  sshTerminalRecording: async (mode, append) => {
+    if (!['none', 'printable', 'all'].includes(mode)) throw new Error('日志类型无效');
+    config.sshLogMode = mode;
+    const overwrite = mode !== 'none' && !append ? sshTerminal.overwrite() : Promise.resolve();
+    await Promise.all([save(), overwrite]);
+    event({ type: 'local-files-changed' });
+    return mode === 'none' ? null : sshTerminal.outputFile || null;
+  },
+  sshTerminalSaveOutput: async () => {
+    const file = sshTerminal.outputFile;
+    if (!file) throw new Error('尚无 SSH 命令终端会话输出');
+    const host = sshTerminal.outputTarget.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const chosen = await dialog.showSaveDialog(win, { title: '保存 SSH 终端输出', defaultPath: path.join(app.getPath('downloads'), 'ssh-' + host + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt'), filters: [{ name: '文本日志', extensions: ['txt', 'log'] }] });
+    if (chosen.canceled || !chosen.filePath) return null;
+    await sshTerminal.copyOutput(chosen.filePath, file);
+    return chosen.filePath;
+  },
   webTelnetSearchDevices: async (address, keyword) => {
     address = require('./web-telnet.cjs').normalizeWebAddress(address);
     if (!webLoginSession || webLoginSession.address !== address) throw new Error('请先登录当前 Web 服务');
@@ -505,26 +579,33 @@ const handlers = {
     return { tenantId: login.tenantId };
   },
   webTelnetConnect: async (address, device, token) => {
+    terminalModes.cancel();
+    const attempt = terminalModes.token();
     address = require('./web-telnet.cjs').normalizeWebAddress(address);
     telnetConnectionContext = `web ${address} device=${String(device).replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     logTelnetConnection('开始连接');
     telnet.close(); webTelnet.close(); webTelnetActive = true;
-    await startTelnetOutput(device);
+    await startTelnetOutput(device, attempt);
     if (!token) {
       if (!webLoginSession || webLoginSession.address !== address.replace(/\/$/, '')) throw new Error('请先登录当前 Web 服务');
       token = await require('./web-telnet.cjs').getTelnetToken(address, webLoginSession);
     }
+    terminalModes.check(attempt);
     try { return await webTelnet.connect(address, device, token); }
     catch (error) { logTelnetConnection('连接失败：' + error.message); throw error; }
   },
   telnetConnect: async (host, port) => {
+    terminalModes.cancel();
+    const attempt = terminalModes.token();
     telnetConnectionContext = `direct ${String(host).replace(/[^a-zA-Z0-9.-]/g, '_')}:${port}`;
     logTelnetConnection('开始连接');
     webTelnet.close(); webTelnetActive = false;
     telnet.close();
-    await startTelnetOutput(host);
+    await startTelnetOutput(host, attempt);
     try {
+      terminalModes.check(attempt);
       await telnet.connect(host, port);
+      terminalModes.check(attempt);
       // Request the device information as soon as a direct Telnet session is ready.
       // Web Telnet has its own command protocol and is intentionally left unchanged.
       telnet.write('send dev-get-info\r\n');
@@ -555,7 +636,7 @@ const handlers = {
     return telnetOutputFile || null;
   },
   telnetWrite: text => webTelnetActive ? webTelnet.write(text) : telnet.write(text),
-  telnetClose: () => { telnet.close(); webTelnet.close(); },
+  telnetClose: () => { terminalModes.cancel(); telnet.close(); webTelnet.close(); event({ type: 'telnet-status', message: '已断开' }); },
   downloadedFiles: async () => {
     const recorded = new Set([...(config.localCopies || []).flatMap(item => item.paths || []), ...(config.lastLocalPaths || []), ...(config.localExtractions || []).flatMap(item => item.paths || [])]);
     const folders = [config.directories.download, config.directories.extract];
@@ -582,7 +663,7 @@ const handlers = {
     }
     return existing.sort((a, b) => a.localeCompare(b));
   },
-  settings: () => ({ telnetLogMode: config.telnetLogMode || 'printable', searchHistory: config.searchHistory, profiles: config.profiles, bookmarks: config.bookmarks, theme: config.theme, logFont: config.logFont, version: app.getVersion(), selectedProfile: config.lastProfileName, directories: config.directories, jumpProfiles: config.jumpProfiles, selectedJump: config.lastJumpName, localPaths: config.lastLocalPaths || [] }),
+  settings: () => ({ sshLogMode: config.sshLogMode || 'printable', telnetLogMode: config.telnetLogMode || 'printable', searchHistory: config.searchHistory, profiles: config.profiles, bookmarks: config.bookmarks, theme: config.theme, logFont: config.logFont, version: app.getVersion(), selectedProfile: config.lastProfileName, directories: config.directories, jumpProfiles: config.jumpProfiles, selectedJump: config.lastJumpName, localPaths: config.lastLocalPaths || [] }),
   loadProfile: async name => {
     const profile = config.profiles.find(p => p.name === name);
     if (!profile) throw new Error('连接配置不存在');
@@ -716,7 +797,16 @@ const handlers = {
   openExtracted: file => { if (!extractedFiles.has(file)) throw new Error('请选择本次解压得到的文件'); return openFile(null, file); },
   chooseKey: async () => (await dialog.showOpenDialog(win, { title: '选择 SSH 私钥', properties: ['openFile'] })).filePaths[0],
   connect,
-  disconnect: () => { disconnect(); return true; },
+  disconnect: async () => {
+    try {
+      const result = await disconnect({ releasePort: true });
+      event({ type: 'disconnected', message: result?.message || 'SSH 连接已断开' });
+      return result || null;
+    } catch (error) {
+      event({ type: 'disconnected', message: 'SSH 连接已断开；跳板机端口释放失败：' + error.message });
+      throw new Error('SSH 连接已断开；跳板机端口释放失败：' + error.message);
+    }
+  },
   list: async directory => {
     const resolved = await callSftp('realpath', directory || '.');
     const entries = await callSftp('readdir', resolved);
@@ -1028,7 +1118,7 @@ const handlers = {
 app.whenReady().then(async () => {
   configPath = path.join(app.getPath('userData'), 'settings.json');
   try { config = JSON.parse(await fsp.readFile(configPath, 'utf8')); } catch { config = {}; }
-  config = { profiles: [], hosts: {}, bookmarks: {}, theme: 'midnight', ...config };
+  config = { profiles: [], hosts: {}, bookmarks: {}, theme: 'midnight', sshLogMode: 'printable', ...config };
   const fontSettings = await logFont;
   try { config.logFont = fontSettings.validateLogFont(config.logFont); }
   catch { config.logFont = { ...fontSettings.defaultLogFont }; }
@@ -1050,6 +1140,23 @@ app.whenReady().then(async () => {
   }
   if (migratedJump) await save();
   cacheRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'ssh-log-viewer-'));
+  const updateOptions = {};
+  if (!app.isPackaged && process.env.VIEWER_DATA_DIR && process.env.VIEWER_UPDATE_TEST_URL) {
+    const endpoint = new URL(process.env.VIEWER_UPDATE_TEST_URL);
+    if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1') throw new Error('更新测试服务必须监听本机回环地址');
+    updateOptions.releaseApiUrl = endpoint.href;
+    updateOptions.allowedTestOrigins = [endpoint.origin];
+  }
+  updater = require('./updater.cjs').createUpdater({
+    currentVersion: app.getVersion(), platform: process.platform, arch: process.arch,
+    cacheDir: path.join(app.getPath('userData'), 'updates'), isPackaged: app.isPackaged,
+    fetch: require('./updater-fetch.cjs').createUpdateFetch(net),
+    emit: update => event({ type: 'update-state', update: { ...update, autoCheck: config.autoCheckUpdates !== false } }),
+    openInstaller: file => shell.openPath(file),
+    openReleasePage: url => shell.openExternal(url),
+    revealInstaller: file => shell.showItemInFolder(file), quit: () => app.quit(),
+    ...updateOptions,
+  });
   if (process.platform === 'darwin') app.dock.setIcon(path.join(__dirname, '../assets/icon.png'));
   const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   const width = Math.min(1440, workArea.width), height = Math.min(940, workArea.height);
@@ -1063,12 +1170,17 @@ app.whenReady().then(async () => {
   win.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   if (process.env.VIEWER_DEV_URL === 'http://127.0.0.1:5173') await win.loadURL(process.env.VIEWER_DEV_URL);
   else await win.loadFile(path.join(__dirname, '../dist/index.html'));
+  scheduleUpdateChecks();
 });
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', e => {
+  terminalModes.cancel();
+  sshTerminal.close();
   webTelnet.close();
   telnet.close();
   if (quitting) return;
-  e.preventDefault(); quitting = true; disconnect();
-  Promise.allSettled([saveQueue, credentials?.queue, telnetOutputQueue, telnetConnectionLogQueue]).then(() => saveQueue).finally(() => fsp.rm(cacheRoot, { recursive: true, force: true })).finally(() => app.quit());
+  e.preventDefault(); quitting = true;
+  clearTimeout(updateTimer); clearInterval(updateInterval);
+  const releasing = disconnect({ releasePort: true }).catch(error => console.error('退出时跳板机端口释放失败：', error.message));
+  Promise.allSettled([updater?.dispose(), releasing, saveQueue, credentials?.queue, telnetOutputQueue, telnetConnectionLogQueue, ...telnetSetups, sshTerminal.drain()]).then(() => saveQueue).finally(() => fsp.rm(cacheRoot, { recursive: true, force: true })).finally(() => app.quit());
 });

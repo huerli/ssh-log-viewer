@@ -24,3 +24,15 @@ export function renderCommand(text, values) {
     return value;
   });
 }
+
+// Moderately saturated colors stay coherent across light and dark themes.
+export const commandButtonColors = Object.freeze([
+  '#5b8def', '#48a999', '#8b7ac9', '#d784a6', '#d99a58',
+  '#5ba8b7', '#7997c2', '#b18bc2', '#96a866', '#c97e74',
+]);
+export function randomCommandColor(usedColors = []) {
+  const used = usedColors.filter(color => typeof color === 'string').map(color => color.toLowerCase());
+  const unused = commandButtonColors.filter(color => !used.includes(color));
+  const candidates = unused.length ? unused : commandButtonColors.filter(color => color !== used.at(-1));
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}

@@ -97,11 +97,18 @@ jobs:
           echo "VERSION=$expected" >> "$GITHUB_ENV"
       - name: Build renderer for package
         run: pnpm build
-      - name: Package installer
-        run: ${{ matrix.command }}
-      - name: Collect installer and checksum
+      - name: Determine package architecture
         shell: bash
-        run: node scripts/collect-release.cjs "${{ matrix.target }}" "$VERSION"
+        run: echo "PACKAGE_ARCH=$(node -p 'process.arch')" >> "$GITHUB_ENV"
+      - name: Package installer
+        shell: bash
+        run: ${{ matrix.command }} --"$PACKAGE_ARCH"
+      - name: Collect installer, checksum, and update metadata
+        shell: bash
+        run: node scripts/collect-release.cjs "${{ matrix.target }}" "$VERSION" --arch "$PACKAGE_ARCH"
+      - name: Validate package update metadata
+        shell: bash
+        run: node scripts/validate-updates.cjs artifacts "$VERSION" --target "${{ matrix.target }}" --arch "$PACKAGE_ARCH"
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4.6.2
         with:
@@ -143,15 +150,8 @@ jobs:
           pattern: ssh-log-viewer-*-${{ github.ref_name }}
           path: release-assets
           merge-multiple: true
-      - name: Validate asset set
-        run: |
-          set -euo pipefail
-          find release-assets -type f -size +0c -print
-          test "$(find release-assets -maxdepth 1 -name '*.deb' | wc -l)" -eq 1
-          test "$(find release-assets -maxdepth 1 -name '*.exe' | wc -l)" -eq 1
-          test "$(find release-assets -maxdepth 1 -name '*.dmg' | wc -l)" -eq 1
-          test "$(find release-assets -maxdepth 1 -name '*.sha256' | wc -l)" -eq 3
-          (cd release-assets && sha256sum -c ./*.sha256)
+      - name: Validate installers, checksums, and update metadata
+        run: node scripts/validate-updates.cjs release-assets "$VERSION"
       - name: Create or reuse draft release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -9,11 +9,33 @@ export type LocalListing = { path: string; root: string; entries: Entry[] };
 export type Match = { line: number; text: string; offset?: number; file?: string; source?: string; exportPath?: string };
 export type LogFont = { family: string; size: number };
 export type SearchResult = { matches: Match[]; count: number; capped: boolean; truncatedLines: number; files?: number; searchedFiles?: number; errors?: string[]; source?: string; paths?: string[] };
-export type ViewerEvent = { paths?: string[]; result?: SearchResult; type: string; id?: string; requestId?: string; bytes?: number; size?: number; count?: number; kind?: string; state?: string; error?: string; destination?: string; file?: string; fileIndex?: number; files?: number; completedFiles?: number; failedFiles?: number; phase?: string; currentBytes?: number; currentSize?: number; source?: string; message?: string } & Partial<Doc>;
+export type UpdateState = {
+  status: 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'ready' | 'installing' | 'error';
+  currentVersion: string; latestVersion?: string; name?: string; notes?: string; publishedAt?: string;
+  releaseUrl?: string; assetName?: string; size?: number; downloadedBytes?: number; progress?: number;
+  installerPath?: string; error?: string; checkedAt?: string; supported: boolean; isPackaged: boolean;
+  platform: string; arch: string; autoCheck: boolean;
+};
+export type ViewerEvent = { update?: UpdateState; paths?: string[]; result?: SearchResult; type: string; id?: string; requestId?: string; bytes?: number; size?: number; count?: number; kind?: string; state?: string; error?: string; destination?: string; file?: string; fileIndex?: number; files?: number; completedFiles?: number; failedFiles?: number; phase?: string; currentBytes?: number; currentSize?: number; source?: string; message?: string } & Partial<Doc>;
 declare global {
   const __APP_VERSION__: string;
   interface Window {
     viewer: {
+      updateState(): Promise<UpdateState>;
+      checkForUpdates(): Promise<UpdateState>;
+      downloadUpdate(): Promise<UpdateState>;
+      cancelUpdate(): Promise<UpdateState>;
+      installUpdate(): Promise<UpdateState>;
+      openUpdateRelease(): Promise<UpdateState>;
+      revealUpdateInstaller(): Promise<UpdateState>;
+      saveUpdatePreferences(enabled: boolean): Promise<UpdateState>;
+      terminalMode(mode: 'ssh' | 'telnet'): Promise<void>;
+      sshTerminalOpen(cols: number, rows: number): Promise<unknown>;
+      sshTerminalWrite(text: string): Promise<void>;
+      sshTerminalResize(cols: number, rows: number): Promise<void>;
+      sshTerminalClose(): Promise<void>;
+      sshTerminalRecording(mode: string, append: boolean): Promise<string | null>;
+      sshTerminalSaveOutput(): Promise<string | null>;
       telnetRecording(mode: string, append: boolean): Promise<string | null>;
       telnetSaveOutput(): Promise<string | null>;
       webTelnetPassword(address: string, username: string, password: string, remember: boolean): Promise<boolean>;
@@ -24,7 +46,7 @@ declare global {
       telnetWrite(text: string): Promise<void>;
       telnetClose(): Promise<void>;
       downloadedFiles(): Promise<string[]>;
-      settings(): Promise<{ telnetLogMode?: string; searchHistory?: string[]; profiles: Profile[]; theme?: string; logFont?: LogFont; version?: string; selectedProfile?: string; directories: { download: string; extract: string }; jumpProfiles: JumpProfile[]; selectedJump?: string; localPaths?: string[] }>;
+      settings(): Promise<{ sshLogMode?: string; telnetLogMode?: string; searchHistory?: string[]; profiles: Profile[]; theme?: string; logFont?: LogFont; version?: string; selectedProfile?: string; directories: { download: string; extract: string }; jumpProfiles: JumpProfile[]; selectedJump?: string; localPaths?: string[] }>;
       openFolder(path: string): Promise<void>;
       exportSearchResults(data: SearchResult & { query: string; file?: string; regex: boolean; caseSensitive: boolean; partial: boolean }): Promise<{ path: string; count: number } | null>;
       copyText(text: string): Promise<void>;
@@ -39,7 +61,7 @@ declare global {
       saveJumpProfile(profile: JumpProfile): Promise<JumpProfile[]>;
       loadProfile(name: string): Promise<Profile>;
       connect(profile: Profile): Promise<{ name: string; home: string }>;
-      disconnect(): Promise<void>;
+      disconnect(): Promise<{ released: boolean; message: string } | null>;
       batchTransfer(directory: string, pattern: string, unpack: boolean): Promise<{ paths: string[]; openPath?: string; completedFiles: number; failedFiles: number; errors: string[]; cancelled?: boolean }>;
       chooseDirectory(kind: string): Promise<{ download: string; extract: string }>;
       openExtracted(file: string): Promise<Doc>;

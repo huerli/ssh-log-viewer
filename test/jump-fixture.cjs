@@ -3,10 +3,18 @@ const { generateKeyPairSync } = require('node:crypto');
 const net = require('node:net');
 async function createJump(allowedPorts = [], options = {}) {
   const key = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey;
-  const clients = new Set(), sockets = new Set(), listeners = new Set(), allowed = new Set(allowedPorts), requests = [], answers = [];
+  const clients = new Set(), sockets = new Set(), listeners = new Set(), allowed = new Set(allowedPorts), requests = [], answers = [], commands = [], events = [], forwards = new Map();
   const pipe = (socket, channel) => { sockets.add(socket); socket.on('close', () => { sockets.delete(socket); channel.destroy(); }); socket.on('error', () => channel.destroy()); channel.on('error', () => socket.destroy()); channel.on('close', () => socket.destroy()); socket.pipe(channel).pipe(socket); };
   const server = new Server({ hostKeys: [key] }, client => {
-    clients.add(client); client.on('error', () => {}); client.on('close', () => clients.delete(client));
+    clients.add(client); client.on('error', () => {}); client.on('close', () => { clients.delete(client); events.push({ type: 'close', client }); });
+    if (options.exec) client.on('session', accept => {
+      const session = accept();
+      session.on('exec', (acceptExec, reject, info) => {
+        commands.push(info.command); events.push({ type: 'exec', client, command: info.command });
+        const stream = acceptExec();
+        Promise.resolve().then(() => options.exec({ command: info.command, stream, client, clients, forwards, events })).catch(error => { stream.stderr.write(error.message); stream.exit(1); stream.end(); });
+      });
+    });
     client.on('authentication', ctx => {
       if (options.keyboardOnly) {
         if (ctx.username !== 'jumper' || ctx.method !== 'keyboard-interactive') return ctx.reject(['keyboard-interactive']);
@@ -30,12 +38,12 @@ async function createJump(allowedPorts = [], options = {}) {
         client.forwardOut('127.0.0.1', listener.address().port, '127.0.0.1', socket.remotePort, (error, channel) => error ? socket.destroy() : pipe(socket, channel));
       });
       listeners.add(listener); listener.on('error', () => reject());
-      listener.listen(0, '127.0.0.1', () => { allowed.add(listener.address().port); accept(listener.address().port); });
+      listener.listen(0, '127.0.0.1', () => { const port = listener.address().port; allowed.add(port); forwards.set(port, { client, listener }); listener.on('close', () => { allowed.delete(port); forwards.delete(port); }); accept(port); });
       client.on('close', () => { if (listener.listening) listener.close(); });
     });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { port: server.address().port, privateKey: key, requests, answers, get count() { return clients.size; }, close: async () => { for (const client of clients) client.end(); for (const socket of sockets) socket.destroy(); for (const listener of listeners) if (listener.listening) listener.close(); await new Promise(resolve => server.close(resolve)); } };
+  return { port: server.address().port, privateKey: key, requests, answers, commands, events, get count() { return clients.size; }, close: async () => { for (const client of clients) client.end(); for (const socket of sockets) socket.destroy(); for (const listener of listeners) if (listener.listening) listener.close(); await new Promise(resolve => server.close(resolve)); } };
 }
 async function reverseTunnel(jump, targetPort) {
   const client = new Client(); const sockets = new Set(); client.on('error', () => {});
