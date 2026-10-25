@@ -15,6 +15,90 @@ const initial: Profile = { name: '', host: '', port: 22, username: '', auth: 'pa
 const size = (bytes = 0) => bytes < 1024 ? `${bytes} B` : bytes < 1024 ** 2 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 const join = (directory: string, name: string) => `${directory.replace(/\/$/, '')}/${name}`;
 const searchHistoryKey = 'ssh-log-viewer.search-history';
+type TransferJump = { name?: string; enabled: boolean; host: string; port: number; username: string; auth: string; keyPath: string; rememberPassword: boolean };
+type TransferProfile = { name: string; host: string; port: number; username: string; auth: string; keyPath: string; rememberPassword: boolean; jumpName?: string; jump?: TransferJump };
+type DirectTelnetNode = { id: string; name: string; host: string; port: number };
+type WebTelnetNode = { id: string; name: string; address: string; username: string; rememberPassword?: boolean };
+type ConnectionTransfer = { format: 'ssh-log-viewer-connection-config'; version: 1; exportedAt: string; sshProfiles: TransferProfile[]; sshJumpProfiles: TransferJump[]; directTelnetNodes: Omit<DirectTelnetNode, 'id'>[]; webTelnetNodes: Omit<WebTelnetNode, 'id'>[] };
+const connectionTransferFormat = 'ssh-log-viewer-connection-config' as const;
+function storedArray<T>(key: string, guard: (value: unknown) => value is T): T[] {
+  try { const value: unknown = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(value) ? value.filter(guard) : []; } catch { return []; }
+}
+function isDirectTelnetNode(value: unknown): value is DirectTelnetNode {
+  if (!value || typeof value !== 'object') return false;
+  const node = value as Record<string, unknown>;
+  return typeof node.id === 'string' && typeof node.name === 'string' && typeof node.host === 'string' && !!node.host.trim() && Number.isInteger(node.port) && Number(node.port) >= 1 && Number(node.port) <= 65535;
+}
+function isWebTelnetNode(value: unknown): value is WebTelnetNode {
+  if (!value || typeof value !== 'object') return false;
+  const node = value as Record<string, unknown>;
+  return typeof node.id === 'string' && typeof node.name === 'string' && typeof node.address === 'string' && !!node.address.trim() && typeof node.username === 'string' && !!node.username.trim();
+}
+function exportJump(value: Partial<JumpProfile>): TransferJump {
+  return { ...(value.name ? { name: String(value.name) } : {}), enabled: Boolean(value.enabled), host: String(value.host || ''), port: Number(value.port || 22), username: String(value.username || ''), auth: String(value.auth || 'password'), keyPath: String(value.keyPath || ''), rememberPassword: Boolean(value.rememberPassword) };
+}
+function exportProfile(value: Profile): TransferProfile {
+  return { name: String(value.name), host: String(value.host), port: Number(value.port || 22), username: String(value.username), auth: String(value.auth || 'password'), keyPath: String(value.keyPath || ''), rememberPassword: Boolean(value.rememberPassword), ...(value.jumpName ? { jumpName: String(value.jumpName) } : {}), ...(value.jump ? { jump: exportJump(value.jump) } : {}) };
+}
+function transferString(value: unknown, label: string, max = 2048): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label}格式无效`);
+  return value.trim();
+}
+function transferPort(value: unknown, label: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`${label}端口无效`);
+  return port;
+}
+function parseTransferJump(value: unknown, label: string): TransferJump {
+  if (!value || typeof value !== 'object') throw new Error(`${label}格式无效`);
+  const item = value as Record<string, unknown>;
+  const auth = transferString(item.auth || 'password', `${label}认证方式`);
+  if (!['password', 'key', 'agent'].includes(auth)) throw new Error(`${label}认证方式无效`);
+  return { ...(typeof item.name === 'string' && item.name.trim() ? { name: transferString(item.name, `${label}名称`, 200) } : {}), enabled: Boolean(item.enabled), host: transferString(item.host, `${label}主机`), port: transferPort(item.port, label), username: transferString(item.username, `${label}用户名`), auth, keyPath: typeof item.keyPath === 'string' ? item.keyPath : '', rememberPassword: Boolean(item.rememberPassword) };
+}
+function parseConnectionTransfer(value: unknown): ConnectionTransfer {
+  if (!value || typeof value !== 'object') throw new Error('配置文件格式无效');
+  const data = value as Record<string, unknown>;
+  if (data.format !== connectionTransferFormat || data.version !== 1) throw new Error('不支持的登录配置文件版本');
+  const profilesValue = data.sshProfiles, jumpsValue = data.sshJumpProfiles, directValue = data.directTelnetNodes, webValue = data.webTelnetNodes;
+  if (![profilesValue, jumpsValue, directValue, webValue].every(Array.isArray)) throw new Error('登录配置缺少必要分组');
+  if ((profilesValue as unknown[]).length > 200 || (jumpsValue as unknown[]).length > 200 || (directValue as unknown[]).length > 200 || (webValue as unknown[]).length > 200) throw new Error('单个配置文件最多包含 200 条记录');
+  const jumps = (jumpsValue as unknown[]).map((value, index) => parseTransferJump(value, `SSH 跳板机 ${index + 1}`));
+  const jumpNames = new Set<string>();
+  for (const jump of jumps) { const name = transferString(jump.name, 'SSH 跳板机名称', 200); if (jumpNames.has(name)) throw new Error(`SSH 跳板机名称重复：${name}`); jumpNames.add(name); jump.name = name; }
+  const profiles = (profilesValue as unknown[]).map((value, index) => {
+    if (!value || typeof value !== 'object') throw new Error(`SSH 连接 ${index + 1} 格式无效`);
+    const item = value as Record<string, unknown>;
+    const auth = transferString(item.auth || 'password', `SSH 连接 ${index + 1}认证方式`);
+    if (!['password', 'key', 'agent'].includes(auth)) throw new Error(`SSH 连接 ${index + 1}认证方式无效`);
+    const profile: TransferProfile = { name: transferString(item.name, `SSH 连接 ${index + 1}名称`, 200), host: transferString(item.host, `SSH 连接 ${index + 1}主机`), port: transferPort(item.port, `SSH 连接 ${index + 1}`), username: transferString(item.username, `SSH 连接 ${index + 1}用户名`), auth, keyPath: typeof item.keyPath === 'string' ? item.keyPath : '', rememberPassword: Boolean(item.rememberPassword) };
+    if (typeof item.jumpName === 'string' && item.jumpName.trim()) profile.jumpName = transferString(item.jumpName, `SSH 连接 ${index + 1}跳板机名称`, 200);
+    if (item.jump !== undefined) profile.jump = parseTransferJump(item.jump, `SSH 连接 ${index + 1}跳板机`);
+    return profile;
+  });
+  const directTelnetNodes = (directValue as unknown[]).map((value, index) => {
+    if (!value || typeof value !== 'object') throw new Error(`Telnet 直连 ${index + 1}格式无效`);
+    const item = value as Record<string, unknown>;
+    return { name: typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 200) : '', host: transferString(item.host, `Telnet 直连 ${index + 1}主机`), port: transferPort(item.port, `Telnet 直连 ${index + 1}`) };
+  });
+  const webTelnetNodes = (webValue as unknown[]).map((value, index) => {
+    if (!value || typeof value !== 'object') throw new Error(`Telnet Web 节点 ${index + 1}格式无效`);
+    const item = value as Record<string, unknown>;
+    return { name: typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 200) : '', address: transferString(item.address, `Telnet Web 节点 ${index + 1}地址`), username: transferString(item.username, `Telnet Web 节点 ${index + 1}用户名`), rememberPassword: Boolean(item.rememberPassword) };
+  });
+  return { format: connectionTransferFormat, version: 1, exportedAt: typeof data.exportedAt === 'string' ? data.exportedAt : '', sshProfiles: profiles, sshJumpProfiles: jumps, directTelnetNodes, webTelnetNodes };
+}
+function uniqueTransferName(value: string, used: Set<string>): string {
+  const base = value.trim() || '导入配置';
+  let candidate = base, suffix = 2;
+  while (used.has(candidate)) candidate = `${base} (${suffix++})`;
+  used.add(candidate); return candidate;
+}
+function downloadJson(filename: string, value: unknown): void {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 function readSearchHistory(): string[] {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(searchHistoryKey) || '[]');
@@ -294,6 +378,8 @@ function App() {
     catch { return { next: 'F3', previous: 'Shift+F3' }; }
   });
   const [directorySettings, setDirectorySettings] = useState(false);
+  const [connectionTransferMessage, setConnectionTransferMessage] = useState('');
+  const connectionTransferInput = useRef<HTMLInputElement>(null);
   const [autoExpandPaths, setAutoExpandPaths] = useState<string[]>([]);
   const [downloadedPaths, setDownloadedPaths] = useState<string[]>([]);
   const [extractedPaths, setExtractedPaths] = useState<string[]>([]);
@@ -346,6 +432,48 @@ function App() {
   const go = (line: number) => setJump(previous => ({ line, token: previous.token + 1, ...jumpSearch.current }));
   const fail = (e: unknown) => setError((e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''));
   const run = async (work: () => Promise<unknown>) => { setError(''); try { await work(); } catch (e) { fail(e); } };
+
+  async function exportConnectionConfig() {
+    const settings = await api.settings();
+    const payload: ConnectionTransfer = {
+      format: connectionTransferFormat,
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      sshProfiles: settings.profiles.map(exportProfile),
+      sshJumpProfiles: settings.jumpProfiles.map(exportJump),
+      directTelnetNodes: storedArray<DirectTelnetNode>('direct-telnet-nodes', isDirectTelnetNode).map(({ id: _id, ...node }) => node),
+      webTelnetNodes: storedArray<WebTelnetNode>('web-telnet-nodes', isWebTelnetNode).map(({ id: _id, ...node }) => node),
+    };
+    downloadJson(`ssh-log-viewer-connections-${new Date().toISOString().slice(0, 10)}.json`, payload);
+    setConnectionTransferMessage(`已导出 ${payload.sshProfiles.length} 个 SSH 连接、${payload.directTelnetNodes.length + payload.webTelnetNodes.length} 个 Telnet 节点`);
+  }
+  async function importConnectionConfig(file: File) {
+    if (file.size > 5 * 1024 * 1024) throw new Error('导入文件不能超过 5MB');
+    const transfer = parseConnectionTransfer(JSON.parse(await file.text()));
+    const current = await api.settings();
+    const usedProfiles = new Set(current.profiles.map(item => item.name));
+    const usedJumps = new Set(current.jumpProfiles.map(item => item.name || ''));
+    const jumpNames = new Map<string, string>();
+    for (const jump of transfer.sshJumpProfiles) {
+      const originalName = jump.name!;
+      const name = uniqueTransferName(originalName, usedJumps);
+      jumpNames.set(originalName, name);
+      await api.saveJumpProfile({ ...jump, name });
+    }
+    for (const profile of transfer.sshProfiles) {
+      const name = uniqueTransferName(profile.name, usedProfiles);
+      const jumpName = profile.jumpName ? jumpNames.get(profile.jumpName) || (usedJumps.has(profile.jumpName) ? profile.jumpName : undefined) : undefined;
+      await api.saveProfile({ ...profile, name, ...(jumpName ? { jumpName } : {}), ...(!jumpName && profile.jump ? { jump: profile.jump } : {}) });
+    }
+    const direct = storedArray<DirectTelnetNode>('direct-telnet-nodes', isDirectTelnetNode);
+    const web = storedArray<WebTelnetNode>('web-telnet-nodes', isWebTelnetNode);
+    localStorage.setItem('direct-telnet-nodes', JSON.stringify([...direct, ...transfer.directTelnetNodes.map(node => ({ ...node, id: crypto.randomUUID(), name: node.name || `${node.host}:${node.port}` }))]));
+    localStorage.setItem('web-telnet-nodes', JSON.stringify([...web, ...transfer.webTelnetNodes.map(node => ({ ...node, id: crypto.randomUUID(), name: node.name || node.address }))]));
+    window.dispatchEvent(new Event('connection-config-imported'));
+    const updated = await api.settings();
+    setProfiles(updated.profiles); setJumpProfiles(updated.jumpProfiles);
+    setConnectionTransferMessage(`已追加导入 ${transfer.sshProfiles.length} 个 SSH 连接、${transfer.directTelnetNodes.length + transfer.webTelnetNodes.length} 个 Telnet 节点；密码和令牌未导入，请重新填写`);
+  }
 
   async function selectJump(name: string) {
     profileLoadToken.current++;
@@ -735,7 +863,7 @@ function App() {
     {jumpSettings && <div className="settings-backdrop" onClick={() => setJumpSettings(false)}><section className="directory-settings jump-settings" role="dialog" aria-label="跳板机配置" onClick={e => e.stopPropagation()}><div className="panel-title">跳板机配置<button aria-label="关闭跳板机配置" onClick={() => setJumpSettings(false)}>×</button></div><label>已保存跳板机<select aria-label="已保存跳板机" value={profile.jumpName || ''} onChange={e => void run(() => selectJump(e.target.value))}><option value="">新建跳板机…</option>{jumpProfiles.map(item => <option key={item.name} value={item.name}>{item.name} · {item.host}:{item.port}</option>)}</select></label><label>从已有服务器导入<select aria-label="从已有服务器导入" value="" onChange={e => void run(() => importServerAsJump(e.target.value))}><option value="">选择已保存的服务器…</option>{profiles.map(item => <option key={item.name} value={item.name}>{item.name} · {item.username}@{item.host}:{item.port}</option>)}</select></label><small className="hint">填入服务器地址及认证信息，确认后点击“保存并使用”。</small><label>跳板机名称<input aria-label="跳板机名称" placeholder="例如：办公室跳板机" value={jumpConfig.name || ''} onChange={e => updateJump({ name: e.target.value })} /></label><label>跳板机主机<input aria-label="跳板机主机" value={jumpConfig.host} onChange={e => updateJump({ host: e.target.value })} /></label><label>跳板机端口<input aria-label="跳板机端口" type="number" value={jumpConfig.port} onChange={e => updateJump({ port: Number(e.target.value) })} /></label><label>跳板机用户名<input aria-label="跳板机用户名" value={jumpConfig.username} onChange={e => updateJump({ username: e.target.value })} /></label><label>跳板机认证方式<select aria-label="跳板机认证方式" value={jumpConfig.auth} onChange={e => updateJump({ auth: e.target.value })}><option value="password">密码</option><option value="key">私钥</option><option value="agent">SSH Agent</option></select></label>{jumpConfig.auth === 'password' && <><label>跳板机密码<input aria-label="跳板机密码" type="password" value={jumpConfig.password || ''} onChange={e => updateJump({ password: e.target.value })} /></label><label className="jump-enable"><input type="checkbox" aria-label="保存跳板机密码" checked={jumpConfig.rememberPassword ?? true} onChange={e => updateJump({ rememberPassword: e.target.checked })} />保存跳板机密码</label></>}{jumpConfig.auth === 'key' && <><label>跳板机私钥<div className="inline"><input aria-label="跳板机私钥" value={jumpConfig.keyPath} onChange={e => updateJump({ keyPath: e.target.value })} /><button onClick={() => void run(async () => { const file = await api.chooseKey(); if (file) updateJump({ keyPath: file }); })}>选择私钥</button></div></label><label>跳板机私钥口令<input aria-label="跳板机私钥口令" type="password" value={jumpConfig.passphrase || ''} onChange={e => updateJump({ passphrase: e.target.value })} /></label></>}<p className="hint">不勾选保存密码时，密码仅用于当前会话，重启后需重新输入。连接设置中的主机、端口、用户名和认证信息用于目标机器。已有反向隧道时，目标主机填 127.0.0.1、端口填跳板机上的监听端口。此功能连接已有隧道，目标机器仍需先建立反向隧道。</p>{error && <p className="settings-error">{error}</p>}<div className="inline"><button className="primary" onClick={() => void run(async () => { await saveJumpCurrent(); setJumpSettings(false); })}>保存并使用</button><button className="danger-button" disabled={!profile.jumpName || connecting} onClick={() => void run(deleteCurrentJump)}>删除跳板机</button><button onClick={() => setJumpSettings(false)}>关闭</button></div></section></div>}
     {fontSettings && <div className="settings-backdrop" onClick={() => !fontSaving && setFontSettings(false)}><form className="directory-settings font-settings" role="dialog" aria-label="日志字体设置" onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); setFontSaving(true); void run(async () => { const saved = await api.saveLogFont(fontDraft); setFont(saved); setFontSettings(false); }).finally(() => setFontSaving(false)); }}><div className="panel-title">日志字体设置<button type="button" aria-label="关闭字体设置" disabled={fontSaving} onClick={() => setFontSettings(false)}>×</button></div><label>字体名称<input aria-label="日志字体" list="log-font-options" maxLength={100} required value={fontDraft.family} onChange={e => setFontDraft({ ...fontDraft, family: e.target.value })} /></label><datalist id="log-font-options">{['Cascadia Code', 'Consolas', 'DejaVu Sans Mono', 'JetBrains Mono', 'Fira Code', 'Noto Sans Mono CJK SC', 'Microsoft YaHei'].map(family => <option key={family} value={family} />)}</datalist><label>字号（px）<input aria-label="日志字号" type="number" min={10} max={32} step={1} required value={Number.isNaN(fontDraft.size) ? '' : fontDraft.size} onChange={e => setFontDraft({ ...fontDraft, size: e.target.valueAsNumber })} /></label><p className="hint">可选择或输入本机已安装的字体名称；未安装的字体会使用备用字体。应用后日志正文、搜索结果及 SSH / Telnet 终端同步生效，重启后保留。</p><div className="font-preview" style={{ fontFamily: logFontFamily(fontDraft.family), fontSize: `${Number.isFinite(fontDraft.size) ? Math.max(10, Math.min(32, fontDraft.size)) : 12}px` }}>2026-10-13 12:34:56 INFO 日志字体预览<br />连接成功 · ERROR 0123456789 AaBb</div>{error && <p className="settings-error">{error}</p>}<div className="inline"><button type="button" disabled={fontSaving} onClick={() => setFontDraft({ ...defaultLogFont })}>恢复默认</button><button className="primary" disabled={fontSaving}>{fontSaving ? '保存中…' : '应用并保存'}</button><button type="button" disabled={fontSaving} onClick={() => setFontSettings(false)}>取消</button></div></form></div>}
     {localPicker && <div className="settings-backdrop" onClick={() => setLocalPicker(null)}><section className="directory-settings local-picker" role="dialog" aria-label="打开本地文件或文件夹" onClick={e => e.stopPropagation()}><div className="panel-title">打开本地文件或文件夹<button aria-label="关闭本地选择" onClick={() => setLocalPicker(null)}>×</button></div><form className="path-bar" onSubmit={e => { e.preventDefault(); void run(() => selectLocal(pickerPath)); }}><input aria-label="选择路径" value={pickerPath} onChange={e => setPickerPath(e.target.value)} /><button>打开路径</button></form><div className="file-list"><button className="file-entry" disabled={localPicker.path === localPicker.root} onClick={() => void run(() => showLocalPicker(join(localPicker.path, '..')))}>↰ 上级目录</button>{localPicker.entries.map(entry => <button key={entry.name} className={`file-entry ${pickerSelection === entry.name ? 'selected' : ''}`} onClick={() => setPickerSelection(entry.name)} onDoubleClick={() => void run(() => entry.directory ? showLocalPicker(join(localPicker.path, entry.name)) : selectLocal(join(localPicker.path, entry.name)))}><span className={entry.directory ? 'folder' : 'file'}>{entry.directory ? '▸' : '≡'}</span><span>{entry.name}</span><small>{entry.directory ? '文件夹' : size(entry.size)}</small></button>)}</div><p className="hint">选择文件或文件夹后点击打开；双击文件夹进入目录。未选择项目时打开当前文件夹。</p>{error && <p className="settings-error">{error}</p>}<div className="inline"><button className="primary" disabled={openingState} onClick={() => void run(() => selectLocal(pickerSelection ? join(localPicker.path, pickerSelection) : localPicker.path))}>打开</button><button onClick={() => setLocalPicker(null)}>取消</button></div></section></div>}
-    {directorySettings && <div className="settings-backdrop" onClick={() => setDirectorySettings(false)}><section className="directory-settings app-settings" role="dialog" aria-label="设置" onClick={e => e.stopPropagation()}><div className="panel-title settings-heading"><div><strong>设置</strong><small>软件更新与日志模式设置</small></div><button aria-label="关闭目录设置" onClick={() => setDirectorySettings(false)}>×</button></div><div className="settings-groups"><section className="settings-section" aria-labelledby="settings-update-heading"><h2 id="settings-update-heading">软件更新</h2><div className="settings-grid settings-update-grid"><section className="settings-card"><h3>版本与升级</h3><p>检查并安装最新发行版</p><div id="update-settings-slot" /></section></div></section><section className="settings-section" aria-labelledby="settings-log-heading"><h2 id="settings-log-heading">日志模式设置</h2><div className="settings-grid">{(['ssh', 'telnet'] as const).map(mode => <section className="settings-card" key={mode}><div className="settings-card-heading"><div><h3>{mode === 'ssh' ? 'SSH' : 'Telnet'}</h3><p>输出日志与常用命令配置</p></div><label className="feature-toggle"><input type="checkbox" checked={featureEnabled[mode]} onChange={e => { const enabled = e.target.checked; setFeatureEnabled(current => ({ ...current, [mode]: enabled })); if (mode === 'ssh' && !enabled && connection) void run(async () => { await api.disconnect(); setConnection(''); setDoc(null); docRef.current = null; setEntries([]); }); void run(() => api.saveFeatureEnabled(mode, enabled)); }} /><span aria-hidden="true" /></label></div>{featureEnabled[mode] && <div id={mode + '-settings-slot'} className="inline terminal-settings-slot" />}</section>)}<section className="settings-card settings-appearance"><h3>外观</h3><p>选择适合当前环境的界面配色</p><label className="theme-picker"><span className="theme-dot" /><select aria-label="颜色主题" value={theme} onChange={e => { const selected = resolveTheme(e.target.value); setTheme(selected); void run(() => api.saveTheme(selected)); }}>{themes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></section><section className="settings-card settings-shortcuts"><h3>搜索结果快捷键</h3><p>快速切换全文搜索中的匹配结果</p>{(['previous', 'next'] as const).map(action => <label key={action}>{action === 'next' ? '下一个结果' : '上一个结果'}<input aria-label={action === 'next' ? '下一个结果快捷键' : '上一个结果快捷键'} readOnly value={shortcuts[action]} onKeyDown={e => { e.preventDefault(); e.stopPropagation(); if (['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'Escape'].includes(e.key)) return; const key = [e.ctrlKey ? 'Ctrl' : '', e.metaKey ? 'Meta' : '', e.altKey ? 'Alt' : '', e.shiftKey ? 'Shift' : '', e.key.length === 1 ? e.key.toUpperCase() : e.key].filter(Boolean).join('+'); const updated = { ...shortcuts, [action]: key }; if (updated.next === updated.previous) { setError('上一个与下一个结果不能使用相同快捷键'); return; } setShortcuts(updated); localStorage.setItem('viewer-shortcuts', JSON.stringify(updated)); }} /></label>)}<small>点击输入框后按下快捷键，自动保存。</small></section><section className="settings-card settings-storage"><h3>文件存储</h3><p>管理下载文件、解压文件与自动记录的日志</p>{(['download', 'extract'] as const).map(kind => <label key={kind}>{kind === 'download' ? '下载目录' : '解压目录'}<div className="inline"><input aria-label={kind === 'download' ? '默认下载目录' : '默认解压目录'} readOnly value={directories[kind]} /><button onClick={() => void run(async () => setDirectories(await api.chooseDirectory(kind)))}>选择目录</button></div></label>)}<p className="hint">选择后自动保存。下载按IP/远端文件夹名称/下载时间（YYYY-MM-DD_HH）/原文件名保存，同名文件保留已有文件；远程解压按相同层级归档到压缩包名目录，重名添加编号，完成后自动打开日志。</p></section></div></section></div><footer className="settings-footer"><span>设置更改后自动保存</span><button className="primary" onClick={() => setDirectorySettings(false)}>完成</button></footer></section></div>}
+    {directorySettings && <div className="settings-backdrop" onClick={() => setDirectorySettings(false)}><section className="directory-settings app-settings" role="dialog" aria-label="设置" onClick={e => e.stopPropagation()}><div className="panel-title settings-heading"><div><strong>设置</strong><small>软件更新与日志模式设置</small></div><button aria-label="关闭目录设置" onClick={() => setDirectorySettings(false)}>×</button></div><div className="settings-groups"><section className="settings-section" aria-labelledby="settings-update-heading"><h2 id="settings-update-heading">软件更新</h2><div className="settings-grid settings-update-grid"><section className="settings-card"><h3>版本与升级</h3><p>检查并安装最新发行版</p><div id="update-settings-slot" /></section></div></section><section className="settings-section" aria-labelledby="settings-log-heading"><h2 id="settings-log-heading">日志模式设置</h2><div className="settings-grid">{(['ssh', 'telnet'] as const).map(mode => <section className="settings-card" key={mode}><div className="settings-card-heading"><div><h3>{mode === 'ssh' ? 'SSH' : 'Telnet'}</h3><p>输出日志与常用命令配置</p></div><label className="feature-toggle"><input type="checkbox" checked={featureEnabled[mode]} onChange={e => { const enabled = e.target.checked; setFeatureEnabled(current => ({ ...current, [mode]: enabled })); if (mode === 'ssh' && !enabled && connection) void run(async () => { await api.disconnect(); setConnection(''); setDoc(null); docRef.current = null; setEntries([]); }); void run(() => api.saveFeatureEnabled(mode, enabled)); }} /><span aria-hidden="true" /></label></div>{featureEnabled[mode] && <div id={mode + '-settings-slot'} className="inline terminal-settings-slot" />}</section>)}<section className="settings-card settings-appearance"><h3>外观</h3><p>选择适合当前环境的界面配色</p><label className="theme-picker"><span className="theme-dot" /><select aria-label="颜色主题" value={theme} onChange={e => { const selected = resolveTheme(e.target.value); setTheme(selected); void run(() => api.saveTheme(selected)); }}>{themes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></section><section className="settings-card settings-shortcuts"><h3>搜索结果快捷键</h3><p>快速切换全文搜索中的匹配结果</p>{(['previous', 'next'] as const).map(action => <label key={action}>{action === 'next' ? '下一个结果' : '上一个结果'}<input aria-label={action === 'next' ? '下一个结果快捷键' : '上一个结果快捷键'} readOnly value={shortcuts[action]} onKeyDown={e => { e.preventDefault(); e.stopPropagation(); if (['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'Escape'].includes(e.key)) return; const key = [e.ctrlKey ? 'Ctrl' : '', e.metaKey ? 'Meta' : '', e.altKey ? 'Alt' : '', e.shiftKey ? 'Shift' : '', e.key.length === 1 ? e.key.toUpperCase() : e.key].filter(Boolean).join('+'); const updated = { ...shortcuts, [action]: key }; if (updated.next === updated.previous) { setError('上一个与下一个结果不能使用相同快捷键'); return; } setShortcuts(updated); localStorage.setItem('viewer-shortcuts', JSON.stringify(updated)); }} /></label>)}<small>点击输入框后按下快捷键，自动保存。</small></section><section className="settings-card settings-storage"><h3>文件存储</h3><p>管理下载文件、解压文件与自动记录的日志</p>{(['download', 'extract'] as const).map(kind => <label key={kind}>{kind === 'download' ? '下载目录' : '解压目录'}<div className="inline"><input aria-label={kind === 'download' ? '默认下载目录' : '默认解压目录'} readOnly value={directories[kind]} /><button onClick={() => void run(async () => setDirectories(await api.chooseDirectory(kind)))}>选择目录</button></div></label>)}<p className="hint">选择后自动保存。下载按IP/远端文件夹名称/下载时间（YYYY-MM-DD_HH）/原文件名保存，同名文件保留已有文件；远程解压按相同层级归档到压缩包名目录，重名添加编号，完成后自动打开日志。</p></section><section className="settings-card settings-connection-transfer"><h3>登录配置迁移</h3><p>导出或导入 SSH、Telnet 的主机和登录配置</p><div className="inline"><button type="button" onClick={() => void run(exportConnectionConfig)}>导出登录配置</button><button type="button" onClick={() => connectionTransferInput.current?.click()}>导入登录配置</button></div><small className="hint">导出文件不包含密码、私钥口令或 Web 令牌；导入后请在对应设置中重新填写。</small>{connectionTransferMessage && <p role="status">{connectionTransferMessage}</p>}<input ref={connectionTransferInput} type="file" accept=".json,application/json" aria-label="导入登录配置文件" hidden onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void run(() => importConnectionConfig(file)); }} /></section></div></section></div><footer className="settings-footer"><span>设置更改后自动保存</span><button className="primary" onClick={() => setDirectorySettings(false)}>完成</button></footer></section></div>}
     {contextMenu && <div className="text-context-menu" role="menu" aria-label="日志文本操作" style={{ left: Math.max(4, Math.min(contextMenu.x, window.innerWidth - 244)), top: Math.max(4, Math.min(contextMenu.y, window.innerHeight - 208)) }} onPointerDown={e => e.preventDefault()}>
       <div className="context-selection" title={contextMenu.text}>{contextMenu.text}</div>
       <button role="menuitem" onClick={() => highlightWord(contextMenu.text)}>高亮所有该字符串</button>

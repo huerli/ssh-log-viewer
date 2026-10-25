@@ -92,6 +92,7 @@ export function TelnetCommands({ onSend, settingsSlot, protocol = 'telnet', visi
   }
   function openGroups() {
     setGroupDrafts(Object.fromEntries(groups.map(item => [item.id, item.name])));
+    setTransferMessage('');
     setGroupName(''); setMenu(null); setAdjustGroups(true);
   }
   function moveGroup(id: string, direction: number) {
@@ -182,7 +183,7 @@ export function TelnetCommands({ onSend, settingsSlot, protocol = 'telnet', visi
           </div>)}{!groups.length && <p className="command-groups-empty">暂无分组，可在下方新增。</p>}</div>
           <div className="command-group-create"><label htmlFor={protocol + '-new-group-name'}>新增分组</label><form onSubmit={event => { event.preventDefault(); if (!groupName.trim()) return; const id = crypto.randomUUID(); save([...groups, { id, name: groupName.trim(), commands: [] }]); setGroupDrafts({ ...groupDrafts, [id]: groupName.trim() }); setActive(id); setGroupName(''); }}><input id={protocol + '-new-group-name'} aria-label="新分组名称" placeholder="输入新分组名称" value={groupName} onChange={event => setGroupName(event.target.value)} /><button className="primary" disabled={!groupName.trim()}>新增分组</button></form></div>
         </div>
-        <footer className="command-groups-footer"><p>用 ↑ ↓ 调整分组顺序，修改名称后点击“保存名称”。<br />点击“导出”可下载对应分组的按钮配置（JSON）。<br />删除分组会同时删除其中的按钮。</p><div className="command-groups-actions"><span>操作后自动保存</span><button className="primary" onClick={() => setAdjustGroups(false)}>完成</button></div></footer>
+        <footer className="command-groups-footer"><p>用 ↑ ↓ 调整分组顺序，修改名称后点击“保存名称”。<br />点击“导出”可下载对应分组的按钮配置（JSON），也可以一键导出全部分组。<br />删除分组会同时删除其中的按钮。</p>{transferMessage && <p role="status">{transferMessage}</p>}<div className="command-groups-actions"><span>操作后自动保存</span><button type="button" disabled={!groups.length} onClick={() => exportGroups(groups)}>一键导出全部</button><button type="button" className="primary" onClick={() => setAdjustGroups(false)}>完成</button></div></footer>
       </section>
     </div>}
     {manage && <div className="settings-backdrop" style={{ zIndex: 120 }} onClick={() => setManage(false)}><section className="directory-settings command-config-dialog" role="dialog" aria-label="按钮栏配置" onClick={e => e.stopPropagation()}><div className="panel-title"><strong>按钮栏配置 · {group?.name || '新建按钮组'}</strong><button aria-label="关闭按钮栏配置" onClick={() => setManage(false)}>×</button></div><div className="command-config-list">{group?.commands.map(c => <div className="command-config-item" key={c.id}><div className="inline"><strong className="command-color-preview" style={buttonStyle(c.color)}>{commandVariables(c.text).length > 0 && <span className="variable-command-badge"><b>{'{ }'}</b>参数</span>}{c.name}</strong><code style={{ flex: 1 }}>{c.text}</code><button onClick={() => { setEditing(c.id); setName(c.name); setText(c.text); setColor(c.color || ''); }}>编辑</button><button onClick={() => { save(groups.map(g => g.id === group.id ? { ...g, commands: g.commands.filter(item => item.id !== c.id) } : g)); reset(); }}>删除</button></div></div>)}</div>

@@ -555,28 +555,42 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 
 .single-command-dialog > label { display: grid; gap: 6px; font-size: 12px; }
 .single-command-dialog > small, .command-groups-dialog > small { color: var(--muted); line-height: 1.6; }
-.command-groups-dialog { display: flex; flex-direction: column; width: min(720px, 92vw); max-height: 90vh; padding: 0; box-sizing: border-box; overflow: hidden; }
-.command-groups-heading { flex-shrink: 0; margin: 0; padding: 20px 24px; border-bottom: 1px solid var(--border); gap: 16px; }
+/* Keep shared settings rules from narrowing or double-padding this dialog. */
+.settings-backdrop > .directory-settings.command-groups-dialog { display: flex; flex-direction: column; width: min(820px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); min-width: 0; padding: 0; overflow: hidden; container: command-groups / inline-size; }
+.settings-backdrop > .directory-settings.command-groups-dialog:not(.app-settings) > .command-groups-heading { flex-shrink: 0; margin: 0; padding: 20px 24px; border-bottom: 1px solid var(--border); gap: 16px; }
+.command-groups-heading > div { min-width: 0; }
+.command-groups-heading > button { flex-shrink: 0; }
 .command-groups-heading small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
-.command-groups-body { min-height: 0; overflow: auto; padding: 4px 24px 20px; }
-.command-group-list { max-height: 42vh; overflow: auto; }
-.command-group-row { display: grid; grid-template-columns: minmax(140px, 1fr) auto 34px 34px auto auto; align-items: end; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.command-groups-body { display: flex; flex-direction: column; min-height: 0; padding: 4px 24px 20px; }
+.command-group-list { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+.command-group-row { display: grid; grid-template-columns: minmax(0, 1fr) auto 36px 36px auto auto; align-items: end; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--border); }
 .command-group-row:last-child { border-bottom: 0; }
 .command-group-row > label { display: grid; gap: 6px; min-width: 0; }
 .command-group-row > label > span { font-size: 11px; color: var(--muted); }
-.command-group-row input { width: 100%; min-width: 0; box-sizing: border-box; }
+.settings-backdrop > .directory-settings.command-groups-dialog input:not([type=checkbox]) { width: 100%; min-width: 0; min-height: 36px; margin: 0; }
 .command-group-row input, .command-group-row button, .command-group-create input, .command-group-create button { height: 36px; }
-.command-group-create { margin-top: 6px; padding-top: 16px; border-top: 1px solid var(--border); }
+.command-group-create { flex-shrink: 0; margin-top: 6px; padding-top: 16px; border-top: 1px solid var(--border); }
 .command-group-create > label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 600; }
 .command-group-create form { display: flex; gap: 8px; }
 .command-group-create input { flex: 1; width: 0; min-width: 0; }
+.command-group-create button { flex-shrink: 0; }
 .command-groups-footer { flex-shrink: 0; border-top: 1px solid var(--border); padding: 16px 24px 20px; background: var(--tint); }
 .command-groups-footer p { margin: 0 0 16px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .command-groups-actions { display: flex; align-items: center; justify-content: flex-end; gap: 16px; }
 .command-groups-actions span { color: var(--muted); font-size: 11px; }
 .command-groups-actions button { min-width: 80px; min-height: 36px; }
 .command-groups-empty { margin: 20px 0; color: var(--muted); font-size: 12px; }
-@media(max-width:680px) { .command-group-row { grid-template-columns: 1fr auto auto auto auto; } .command-group-row > label { grid-column: 1 / -1; } .command-groups-heading, .command-groups-footer { padding: 16px; } .command-groups-body { padding: 0 16px 16px; } }
+@container command-groups (max-width: 640px) {
+  .command-group-row { grid-template-columns: minmax(0, 1fr) 36px 36px auto auto; align-items: center; }
+  .command-group-row > label { grid-column: 1 / -1; }
+  .command-group-row > .primary { justify-self: start; }
+  .settings-backdrop > .directory-settings.command-groups-dialog:not(.app-settings) > .command-groups-heading, .command-groups-footer { padding: 16px; }
+  .command-groups-body { padding: 0 16px 16px; }
+}
+@container command-groups (max-width: 360px) {
+  .command-group-row { gap: 6px; }
+  .command-group-row button { padding-inline: 7px; }
+}
 
 .single-command-dialog .command-edit-form { grid-template-columns: minmax(0, 1fr) auto; }
 .single-command-dialog .command-name-field { grid-column: auto; }

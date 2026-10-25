@@ -165,12 +165,86 @@ const os = require('node:os');
     await newGroup.getByRole('button', { name: '确认', exact: true }).click();
     await newGroup.waitFor({ state: 'hidden' });
     let manager = await groupManager();
+    await page.evaluate(() => {
+      window.__commandExport = null;
+      const createObjectURL = URL.createObjectURL.bind(URL);
+      const originalClick = HTMLAnchorElement.prototype.click;
+      URL.createObjectURL = blob => {
+        const url = createObjectURL(blob);
+        window.__commandExport = { url, blob };
+        return url;
+      };
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download) window.__commandExport = { ...window.__commandExport, filename: this.download };
+        return originalClick.call(this);
+      };
+    });
+    await manager.getByRole('button', { name: '一键导出全部', exact: true }).click();
+    const exported = await page.evaluate(async () => {
+      const exportState = window.__commandExport;
+      if (!exportState?.url || !exportState.blob) throw new Error('export did not create a Blob URL');
+      const text = await exportState.blob.text();
+      URL.revokeObjectURL(exportState.url);
+      return { filename: exportState.filename, payload: JSON.parse(text) };
+    });
+    assert.match(exported.filename, /^telnet-commands-\d{4}-\d{2}-\d{2}\.json$/);
+    const payload = exported.payload;
+    assert.equal(payload.format, 'ssh-log-viewer-telnet-commands');
+    assert.equal(payload.version, 1);
+    assert.deepEqual(payload.groups, await groups('telnet'), 'one-click export must include all groups in order');
+    assert.match(await manager.getByRole('status').textContent(), /已导出 3 个分组/);
     saved = await groups('telnet');
     const addedId = saved.find(group => group.name === '新建分组').id;
     const row = manager.locator('.command-group-row').filter({ has: page.getByLabel('分组名称：新建分组', { exact: true }) });
     await row.getByLabel('分组名称：新建分组', { exact: true }).fill('重命名分组');
     await row.getByRole('button', { name: '保存名称', exact: true }).click();
     assert.equal((await groups('telnet')).find(group => group.id === addedId).name, '重命名分组');
+    // Many groups must scroll independently while creation and completion stay visible.
+    const layoutGroups = Array.from({ length: 5 }, (_, index) => `布局检查分组 ${index + 1}：较长的设备调试名称`);
+    for (const name of layoutGroups) {
+      await manager.getByLabel('新分组名称', { exact: true }).fill(name);
+      await manager.getByRole('button', { name: '新增分组', exact: true }).click();
+    }
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'violet'; });
+    for (const viewport of [{ width: 1100, height: 900 }, { width: 760, height: 780 }, { width: 545, height: 900 }, { width: 360, height: 640 }, { width: 900, height: 520 }]) {
+      await page.setViewportSize(viewport);
+      const layout = await manager.evaluate(dialog => {
+        const bounds = dialog.getBoundingClientRect();
+        const list = dialog.querySelector('.command-group-list');
+        const clipped = [...dialog.querySelectorAll('input, button')].filter(element => {
+          const rect = element.getBoundingClientRect();
+          return rect.left < bounds.left || rect.right > bounds.right;
+        }).map(element => element.getAttribute('aria-label') || element.textContent);
+        const fixedControls = [...dialog.querySelectorAll('.command-groups-heading, .command-group-create, .command-groups-footer')].every(element => {
+          const rect = element.getBoundingClientRect();
+          return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+        });
+        return {
+          width: bounds.width,
+          fitsViewport: bounds.top >= 0 && bounds.bottom <= innerHeight,
+          overflow: dialog.scrollWidth > dialog.clientWidth || list.scrollWidth > list.clientWidth,
+          clipped, fixedControls,
+          nameWidth: dialog.querySelector('.command-group-row input').getBoundingClientRect().width,
+        };
+      });
+      assert.equal(layout.fitsViewport, true, `group dialog exceeds viewport at ${JSON.stringify(viewport)}`);
+      assert.equal(layout.overflow, false, `group dialog has horizontal scrolling at ${JSON.stringify(viewport)}`);
+      assert.deepEqual(layout.clipped, [], `group controls clipped at ${JSON.stringify(viewport)}`);
+      assert.equal(layout.fixedControls, true, `group creation/footer clipped at ${JSON.stringify(viewport)}`);
+      assert.ok(layout.nameWidth >= 180, `group name compressed at ${JSON.stringify(viewport)}`);
+      if (viewport.width === 1100) assert.ok(layout.width >= 800, 'shared settings styles must not narrow the group dialog');
+      await manager.locator('.command-group-list').evaluate(list => { list.scrollTop = list.scrollHeight; });
+      const lastRowVisible = await manager.locator('.command-group-row').last().evaluate(row => {
+        const rect = row.getBoundingClientRect();
+        const list = row.parentElement.getBoundingClientRect();
+        return rect.top >= list.top - 1 && rect.bottom <= list.bottom + 1;
+      });
+      assert.equal(lastRowVisible, true, 'last group must be fully reachable by scrolling the list');
+      await manager.locator('.command-group-list').evaluate(list => { list.scrollTop = 0; });
+      if ([1100, 545].includes(viewport.width)) await page.screenshot({ path: path.join(artifacts, `command-bar-groups-${viewport.width}.png`) });
+    }
+    await page.setViewportSize(originalViewport);
+    for (const name of layoutGroups) await manager.getByRole('button', { name: '删除分组' + name, exact: true }).click();
     await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
     await page.screenshot({ path: path.join(artifacts, 'command-bar-groups.png') });
     await page.evaluate(() => { document.documentElement.dataset.theme = 'midnight'; });

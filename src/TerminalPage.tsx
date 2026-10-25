@@ -7,6 +7,14 @@ import { SearchAddon } from '@xterm/addon-search';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import React, { useEffect, useRef, useState } from 'react';
+type DirectNode = { id: string; name: string; host: string; port: number };
+type WebNode = { id: string; name: string; address: string; username: string; rememberPassword?: boolean };
+function readDirectNodes(): DirectNode[] {
+  try { const saved = JSON.parse(localStorage.getItem('direct-telnet-nodes') || '[]'); return Array.isArray(saved) ? saved.filter(node => node && typeof node.id === 'string' && typeof node.name === 'string' && typeof node.host === 'string' && node.host.trim() && Number.isInteger(node.port) && node.port >= 1 && node.port <= 65535) : []; } catch { return []; }
+}
+function readWebNodes(): WebNode[] {
+  try { const saved = JSON.parse(localStorage.getItem('web-telnet-nodes') || '[]'); return Array.isArray(saved) ? saved.filter(node => node && typeof node.id === 'string' && typeof node.name === 'string' && typeof node.address === 'string' && node.address.trim() && typeof node.username === 'string' && node.username.trim()) : []; } catch { return []; }
+}
 export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpen, sshConnection = '', outputVisible }: { protocol: 'ssh' | 'telnet'; active: boolean; settingsOpen: boolean; onShowOutput(): void | Promise<void>; font: LogFont; sshConnection?: string; outputVisible: boolean }) {
   const isSsh = protocol === 'ssh';
   const label = isSsh ? 'SSH' : 'Telnet';
@@ -28,9 +36,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
   const webModeRef = useRef(webMode);
   webModeRef.current = webMode;
   const webLineRef = useRef('');
-  const [webNodes, setWebNodes] = useState<{ id: string; name: string; address: string; username: string; rememberPassword?: boolean }[]>(() => {
-    try { const value = JSON.parse(localStorage.getItem('web-telnet-nodes') || '[]'); return Array.isArray(value) ? value.filter(node => typeof node.id === 'string' && typeof node.name === 'string' && typeof node.address === 'string' && typeof node.username === 'string') : []; } catch { return []; }
-  });
+  const [webNodes, setWebNodes] = useState<WebNode[]>(readWebNodes);
   const [webNodeId, setWebNodeId] = useState('');
   const [webNodeName, setWebNodeName] = useState('');
   const [connectionSettings, setConnectionSettings] = useState(false);
@@ -77,12 +83,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
   }, [deviceQuery, webAddress, webUser, webMode, isSsh]);
   const [telnetToken, setTelnetToken] = useState('');
   const [webLoginStatus, setWebLoginStatus] = useState('');
-  const [directNodes, setDirectNodes] = useState<{ id: string; name: string; host: string; port: number }[]>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('direct-telnet-nodes') || '[]');
-      return Array.isArray(saved) ? saved.filter(node => typeof node.id === 'string' && typeof node.name === 'string' && typeof node.host === 'string' && node.host.trim() && Number.isInteger(node.port) && node.port >= 1 && node.port <= 65535) : [];
-    } catch { return []; }
-  });
+  const [directNodes, setDirectNodes] = useState<DirectNode[]>(readDirectNodes);
   const [directNodeId, setDirectNodeId] = useState(directNodes[0]?.id || '');
   const [directNodeName, setDirectNodeName] = useState(directNodes[0]?.name || '');
   const [host, setHost] = useState(directNodes[0]?.host || '192.168.20.7');
@@ -95,6 +96,20 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     setDirectNodeId(node?.id || ''); setDirectNodeName(node?.name || '');
     setHost(node?.host || ''); setPort(node?.port || 23);
   }
+  useEffect(() => {
+    if (isSsh) return;
+    const refreshImportedNodes = () => {
+      const direct = readDirectNodes();
+      const web = readWebNodes();
+      setDirectNodes(direct); setWebNodes(web);
+      const selectedDirect = direct.find(node => node.id === directNodeId) || direct[0];
+      if (selectedDirect) { setDirectNodeId(selectedDirect.id); setDirectNodeName(selectedDirect.name); setHost(selectedDirect.host); setPort(selectedDirect.port); }
+      const selectedWeb = web.find(node => node.id === webNodeId) || web[0];
+      if (selectedWeb) { setWebNodeId(selectedWeb.id); setWebNodeName(selectedWeb.name); setWebAddress(selectedWeb.address); setWebUser(selectedWeb.username); setRememberPassword(selectedWeb.rememberPassword ?? true); }
+    };
+    window.addEventListener('connection-config-imported', refreshImportedNodes);
+    return () => window.removeEventListener('connection-config-imported', refreshImportedNodes);
+  }, [isSsh, directNodeId, webNodeId]);
   const connectedRef = useRef(false);
   const connectionVersion = useRef(0);
   const sshOpening = useRef(false);
