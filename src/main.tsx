@@ -38,7 +38,8 @@ function exportJump(value: Partial<JumpProfile>): TransferJump {
   return { ...(value.name ? { name: String(value.name) } : {}), enabled: Boolean(value.enabled), host: String(value.host || ''), port: Number(value.port || 22), username: String(value.username || ''), auth: String(value.auth || 'password'), keyPath: String(value.keyPath || ''), rememberPassword: Boolean(value.rememberPassword) };
 }
 function exportProfile(value: Profile): TransferProfile {
-  return { name: String(value.name), host: String(value.host), port: Number(value.port || 22), username: String(value.username), auth: String(value.auth || 'password'), keyPath: String(value.keyPath || ''), rememberPassword: Boolean(value.rememberPassword), ...(value.jumpName ? { jumpName: String(value.jumpName) } : {}), ...(value.jump ? { jump: exportJump(value.jump) } : {}) };
+  const jump = value.jump && (value.jump.enabled || value.jump.name?.trim() || value.jump.host?.trim() || value.jump.username?.trim()) ? exportJump(value.jump) : undefined;
+  return { name: String(value.name), host: String(value.host), port: Number(value.port || 22), username: String(value.username), auth: String(value.auth || 'password'), keyPath: String(value.keyPath || ''), rememberPassword: Boolean(value.rememberPassword), ...(value.jumpName ? { jumpName: String(value.jumpName) } : {}), ...(jump ? { jump } : {}) };
 }
 function transferString(value: unknown, label: string, max = 2048): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label}格式无效`);
@@ -55,6 +56,11 @@ function parseTransferJump(value: unknown, label: string): TransferJump {
   const auth = transferString(item.auth || 'password', `${label}认证方式`);
   if (!['password', 'key', 'agent'].includes(auth)) throw new Error(`${label}认证方式无效`);
   return { ...(typeof item.name === 'string' && item.name.trim() ? { name: transferString(item.name, `${label}名称`, 200) } : {}), enabled: Boolean(item.enabled), host: transferString(item.host, `${label}主机`), port: transferPort(item.port, label), username: transferString(item.username, `${label}用户名`), auth, keyPath: typeof item.keyPath === 'string' ? item.keyPath : '', rememberPassword: Boolean(item.rememberPassword) };
+}
+function isEmptyDisabledJump(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Record<string, unknown>;
+  return !item.enabled && ![item.name, item.host, item.username].some(field => typeof field === 'string' && field.trim());
 }
 function parseConnectionTransfer(value: unknown): ConnectionTransfer {
   if (!value || typeof value !== 'object') throw new Error('配置文件格式无效');
@@ -73,7 +79,7 @@ function parseConnectionTransfer(value: unknown): ConnectionTransfer {
     if (!['password', 'key', 'agent'].includes(auth)) throw new Error(`SSH 连接 ${index + 1}认证方式无效`);
     const profile: TransferProfile = { name: transferString(item.name, `SSH 连接 ${index + 1}名称`, 200), host: transferString(item.host, `SSH 连接 ${index + 1}主机`), port: transferPort(item.port, `SSH 连接 ${index + 1}`), username: transferString(item.username, `SSH 连接 ${index + 1}用户名`), auth, keyPath: typeof item.keyPath === 'string' ? item.keyPath : '', rememberPassword: Boolean(item.rememberPassword) };
     if (typeof item.jumpName === 'string' && item.jumpName.trim()) profile.jumpName = transferString(item.jumpName, `SSH 连接 ${index + 1}跳板机名称`, 200);
-    if (item.jump !== undefined) profile.jump = parseTransferJump(item.jump, `SSH 连接 ${index + 1}跳板机`);
+    if (item.jump !== undefined && !isEmptyDisabledJump(item.jump)) profile.jump = parseTransferJump(item.jump, `SSH 连接 ${index + 1}跳板机`);
     return profile;
   });
   const directTelnetNodes = (directValue as unknown[]).map((value, index) => {
