@@ -124,7 +124,8 @@ async function eventually(check, message, timeout = 10000) {
     assert.ok(first.windows.at(-1).cols > 0 && first.windows.at(-1).rows > 0);
 
     const sshLog = await page.evaluate(() => window.viewer.sshTerminalRecording('printable', true));
-    assert.match(path.relative(path.join(temp, 'downloads'), sshLog), /^ssh[/\\]\d{4}-\d{2}-\d{2}[/\\]127\.0\.0\.1[/\\].+\.log$/);
+    assert.equal(path.basename(path.dirname(sshLog)), 'tester@127.0.0.1_' + ssh.port);
+    assert.ok(path.relative(path.join(temp, 'downloads'), sshLog).startsWith('ssh' + path.sep));
     await eventually(async () => (await fs.readFile(sshLog, 'utf8')).includes('unique-ssh-echo-42'), 'SSH automatic log must contain received data');
     assert.ok(!(await fs.readFile(sshLog, 'utf8')).includes('\x1b['));
     await fs.mkdir(path.resolve(__dirname, '../artifacts'), { recursive: true });
@@ -152,9 +153,30 @@ async function eventually(check, message, timeout = 10000) {
     const sidebar = page.locator('#telnet-connection-slot');
     await sidebar.getByRole('button', { name: '⚙ 设置', exact: true }).click();
     const telnetSettings = page.getByRole('dialog', { name: 'Telnet 连接设置', exact: true });
+    await telnetSettings.getByLabel('直连名称', { exact: true }).fill('机车1234');
     await telnetSettings.getByLabel('主机', { exact: true }).fill('127.0.0.1');
     await telnetSettings.getByLabel('端口', { exact: true }).fill(String(telnet.address().port));
     await telnetSettings.getByRole('button', { name: '保存', exact: true }).click();
+    const directSaved = await page.evaluate(() => JSON.parse(localStorage.getItem('direct-telnet-nodes')));
+    assert.equal(directSaved.length, 1);
+    await sidebar.getByRole('button', { name: '⚙ 设置', exact: true }).click();
+    await telnetSettings.getByRole('button', { name: '新增直连', exact: true }).click();
+    await telnetSettings.getByLabel('直连名称', { exact: true }).fill('备用设备');
+    await telnetSettings.getByLabel('主机', { exact: true }).fill('192.0.2.7');
+    await telnetSettings.getByLabel('端口', { exact: true }).fill('2323');
+    await telnetSettings.getByRole('button', { name: '保存', exact: true }).click();
+    assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('direct-telnet-nodes')))).length, 2);
+    await sidebar.getByRole('button', { name: '⚙ 设置', exact: true }).click();
+    await telnetSettings.getByLabel('直连名称', { exact: true }).fill('备用设备已修改');
+    await telnetSettings.getByRole('button', { name: '保存', exact: true }).click();
+    await sidebar.getByLabel('Telnet 连接选择', { exact: true }).selectOption(directSaved[0].id);
+    await sidebar.getByRole('button', { name: '⚙ 设置', exact: true }).click();
+    assert.equal(await telnetSettings.getByLabel('主机', { exact: true }).inputValue(), '127.0.0.1');
+    await telnetSettings.getByLabel('直连配置', { exact: true }).selectOption({ label: '备用设备已修改' });
+    await telnetSettings.getByRole('button', { name: '删除直连', exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('direct-telnet-nodes'))), directSaved);
+    await telnetSettings.getByRole('button', { name: '保存', exact: true }).click();
+
     await sidebar.getByRole('button', { name: '连接', exact: true }).click();
     await eventually(async () => await header.getByRole('button', { name: 'Telnet 输出', exact: true }).getAttribute('aria-pressed') === 'true', 'connecting from SSH must show Telnet output');
     await eventually(() => first.closed, 'switch to Telnet must close SSH shell');
@@ -162,10 +184,27 @@ async function eventually(check, message, timeout = 10000) {
     assert.ok((await page.evaluate(() => window.viewer.list('/system/log'))).entries.some(item => item.name === 'fixture.log'), 'SFTP must remain usable');
     assert.equal(await page.getByRole('button', { name: 'SSH 独立按钮', exact: true }).isVisible(), false);
 
-    await eventually(() => telnetSessions[0]?.input.includes('send dev-get-info\r\n'), 'direct Telnet must send initial device information request');
     await searchOutput('Telnet', 'Telnet fixture ready');
+    assert.equal(telnetSessions[0].input, '', 'connecting must not send unsolicited commands');
+    // The fixture responds without echoing input, so displayed commands must come from local echo.
+    const telnetInput = page.getByLabel('Telnet 输入', { exact: true });
+    await telnetInput.fill('local-echo-enter');
+    await telnetInput.press('Enter');
+    await eventually(() => telnetSessions[0].input.includes('local-echo-enter\r\n'), 'Enter must transmit a complete Telnet command');
+    await searchOutput('Telnet', 'local-echo-enter');
+    await sidebar.getByLabel('本地回显', { exact: true }).uncheck();
+    await telnetInput.fill('local-echo-disabled');
+    await telnetInput.press('Enter');
+    await eventually(() => telnetSessions[0].input.includes('local-echo-disabled\r\n'), 'disabling echo must still transmit input');
+    await searchOutput('Telnet', 'local-echo-disabled', '没有匹配内容');
+    await sidebar.getByLabel('本地回显', { exact: true }).check();
+    await telnetInput.fill('local-echo-click');
+    await telnetInput.locator('..').getByRole('button', { name: '发送', exact: true }).click();
+    await eventually(() => telnetSessions[0].input.includes('local-echo-click\r\n'), 'Send must transmit a complete Telnet command');
+    await searchOutput('Telnet', 'local-echo-click');
+
     await page.getByRole('button', { name: '设备信息', exact: true }).click();
-    await eventually(() => telnetSessions[0].input.includes('dev-get-info\r\n', 'send dev-get-info\r\n'.length), 'Telnet button must still send its own command');
+    await eventually(() => telnetSessions[0].input.includes('dev-get-info\r\n'), 'Telnet button must still send its own command');
     await editCommand('设备信息', 'Telnet 独立按钮', 'dev-custom');
     const saved = await page.evaluate(() => ({ ssh: JSON.parse(localStorage.getItem('ssh-command-groups')), telnet: JSON.parse(localStorage.getItem('telnet-command-groups')) }));
     assert.equal(saved.ssh[0].commands[0].name, 'SSH 独立按钮');
@@ -177,6 +216,7 @@ async function eventually(check, message, timeout = 10000) {
     await mode('SSH');
     assert.equal(telnetSessions[0].closed, false, 'leaving Telnet for SSH must keep its socket open');
     const telnetLog = await page.evaluate(() => window.viewer.telnetRecording('printable', true));
+    assert.equal(path.basename(path.dirname(telnetLog)), '机车1234--127.0.0.1_' + telnet.address().port);
     [...sockets][0].write('background-telnet-marker 中文\r\n');
     await eventually(async () => (await fs.readFile(telnetLog, 'utf8')).includes('background-telnet-marker'), 'background Telnet output must still be recorded');
     assert.equal(await header.getByRole('button', { name: 'SSH 输出', exact: true }).getAttribute('aria-pressed'), 'true', 'background output must not change the visible page');
@@ -226,6 +266,9 @@ async function eventually(check, message, timeout = 10000) {
     await eventually(() => telnetSessions[0].closed, 'explicit Telnet disconnect must still close the socket');
     assert.deepEqual(errors, []);
     await app.close(); app = await launch(); page = await app.firstWindow();
+    await page.locator('.app').waitFor();
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('direct-telnet-nodes'))), directSaved);
+    assert.equal(await page.getByLabel('Telnet 连接选择', { exact: true }).inputValue(), directSaved[0].id);
     await page.getByRole('button', { name: 'Telnet 独立按钮', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'SSH 独立按钮', exact: true }).isVisible(), false);
     await page.locator('.header-actions').getByRole('button', { name: 'SSH 输出', exact: true }).click();

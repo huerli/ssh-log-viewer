@@ -19,6 +19,8 @@ test('Telnet session logs are dated, unique and persist previous output', async 
     assert.equal(await readFile(next, 'utf8'), '');
     const local = await createTelnetLog(root, '192.168.20.7', now);
     assert.equal(path.dirname(local), path.join(root, 'telnet', '2026-10-23', '192.168.20.7'));
+    const named = await createTelnetLog(root, '机车1234--设备-2098267890303311--成都', now);
+    assert.equal(path.basename(path.dirname(named)), '机车1234--设备-2098267890303311--成都');
     const unsafe = await createTelnetLog(root, '../../outside', now);
     assert.ok(unsafe.startsWith(path.join(root, 'telnet', '2026-10-23') + path.sep));
   } finally { await rm(root, { recursive: true, force: true }); }

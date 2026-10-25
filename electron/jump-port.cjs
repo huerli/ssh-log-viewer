@@ -10,7 +10,7 @@ function buildJumpPortReleaseCommand(port) {
   const script = String.raw`
 port=PORT_TO_RELEASE
 fail() { printf '%s\n' "$*" >&2; exit 1; }
-for tool in awk readlink tr od sleep; do
+for tool in awk readlink tr od sleep ls; do
   command -v "$tool" >/dev/null 2>&1 || fail "释放跳板机端口需要 Linux 工具：$tool"
 done
 [ -r /proc/net/tcp ] || fail '无法读取 /proc/net/tcp，不能安全确认跳板机端口归属'
@@ -40,12 +40,20 @@ while [ "$ancestor" -gt 1 ] 2>/dev/null; do
   protected="$protected$ancestor "
   ancestor=$(awk '/^PPid:/ { print $2 }' "/proc/$ancestor/status" 2>/dev/null)
 done
+# BusyBox readlink accepts a single path; enumerate descriptors individually.
+socket_links() {
+  for socket_fd in "$1"/*; do
+    readlink "$socket_fd" 2>/dev/null || :
+  done
+}
 owners=' '
 found=' '
 for directory in /proc/[0-9]*/fd; do
   [ -d "$directory" ] || continue
   pid=@@{directory#/proc/}; pid=@@{pid%/fd}
-  sockets=$(readlink "$directory"/* 2>/dev/null)
+  # Bulk listing is only a discovery hint. check_owner re-reads each actual
+  # symlink before signalling, avoiding one subprocess per FD across /proc.
+  sockets=$(LC_ALL=C ls -l "$directory" 2>/dev/null | awk '$(NF-1) == "->" && $NF ~ /^socket:\[[0-9]+\]$/ { print $NF }')
   for socket in $sockets; do
     case "$socket" in 'socket:['*']') inode=@@{socket#socket:[}; inode=@@{inode%]} ;; *) continue ;; esac
     case " $inodes " in *" $inode "*)
@@ -75,7 +83,7 @@ check_owner() {
   # forward. Refuse if it also owns any other listening address or port.
   all_listeners=$(listeners)
   owns_target=no
-  sockets=$(readlink "/proc/$pid/fd"/* 2>/dev/null)
+  sockets=$(socket_links "/proc/$pid/fd")
   for socket in $sockets; do
     case "$socket" in 'socket:['*']') inode=@@{socket#socket:[}; inode=@@{inode%]} ;; *) continue ;; esac
     records=$(printf '%s\n' "$all_listeners" | awk -F: -v i="$inode" '$1 == i')

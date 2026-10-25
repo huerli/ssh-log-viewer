@@ -14,7 +14,7 @@ const { writeSearchExport } = require('./search-export.cjs');
 const { extractArchive, extractLocalArchive } = require('./archive.cjs');
 const { remoteSource } = require('./remote-source.cjs');
 const { CredentialStore, credentialId } = require('./credentials.cjs');
-const { sourceIdentity, downloadPath, extractionPath, archiveOwner } = require('./source-names.cjs');
+const { sourceIdentity, downloadPath, extractionPath, archiveOwner, telnetLogTarget, terminalLogTarget } = require('./source-names.cjs');
 
 if (process.platform === 'linux') {
   app.setDesktopName('com.teee.sshlogviewer.desktop');
@@ -482,7 +482,7 @@ async function startTelnetOutput(target, token) {
   extractedFiles.add(file);
   event({ type: 'local-files-changed' });
   terminalModes.check(token);
-  telnetOutputHost = String(target).replace(/[^a-zA-Z0-9.-]/g, '_');
+  telnetOutputHost = terminalLogTarget(target);
   telnetOutputFile = file;
 }
 function logTelnetConnection(message) {
@@ -511,7 +511,7 @@ const webTelnet = require('./web-telnet.cjs').createWebTelnet(telnetEmit);
 let webTelnetActive = false, webLoginSession;
 const sshTerminal = require('./ssh-terminal.cjs').createSshTerminal({
   getClient: () => connection,
-  getTarget: () => connectionHost || connectionName,
+  getTarget: () => connectionOrigin?.tag || connectionHost || connectionName,
   getRoot: () => config.directories.download,
   getLogMode: () => config.sshLogMode || 'printable',
   emit: event,
@@ -552,7 +552,7 @@ const handlers = {
   sshTerminalSaveOutput: async () => {
     const file = sshTerminal.outputFile;
     if (!file) throw new Error('尚无 SSH 命令终端会话输出');
-    const host = sshTerminal.outputTarget.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const host = terminalLogTarget(sshTerminal.outputTarget);
     const chosen = await dialog.showSaveDialog(win, { title: '保存 SSH 终端输出', defaultPath: path.join(app.getPath('downloads'), 'ssh-' + host + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt'), filters: [{ name: '文本日志', extensions: ['txt', 'log'] }] });
     if (chosen.canceled || !chosen.filePath) return null;
     await sshTerminal.copyOutput(chosen.filePath, file);
@@ -578,14 +578,14 @@ const handlers = {
     webLoginSession = { address: address.replace(/\/$/, ''), username: username.trim(), ...login };
     return { tenantId: login.tenantId };
   },
-  webTelnetConnect: async (address, device, token) => {
+  webTelnetConnect: async (address, device, token, identity = {}) => {
     terminalModes.cancel();
     const attempt = terminalModes.token();
     address = require('./web-telnet.cjs').normalizeWebAddress(address);
     telnetConnectionContext = `web ${address} device=${String(device).replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     logTelnetConnection('开始连接');
     telnet.close(); webTelnet.close(); webTelnetActive = true;
-    await startTelnetOutput(device, attempt);
+    await startTelnetOutput(telnetLogTarget({ device, address, name: identity.name, deviceName: identity.deviceName }), attempt);
     if (!token) {
       if (!webLoginSession || webLoginSession.address !== address.replace(/\/$/, '')) throw new Error('请先登录当前 Web 服务');
       token = await require('./web-telnet.cjs').getTelnetToken(address, webLoginSession);
@@ -594,21 +594,18 @@ const handlers = {
     try { return await webTelnet.connect(address, device, token); }
     catch (error) { logTelnetConnection('连接失败：' + error.message); throw error; }
   },
-  telnetConnect: async (host, port) => {
+  telnetConnect: async (host, port, name = '') => {
     terminalModes.cancel();
     const attempt = terminalModes.token();
     telnetConnectionContext = `direct ${String(host).replace(/[^a-zA-Z0-9.-]/g, '_')}:${port}`;
     logTelnetConnection('开始连接');
     webTelnet.close(); webTelnetActive = false;
     telnet.close();
-    await startTelnetOutput(host, attempt);
+    await startTelnetOutput(telnetLogTarget({ host, port, name }), attempt);
     try {
       terminalModes.check(attempt);
       await telnet.connect(host, port);
       terminalModes.check(attempt);
-      // Request the device information as soon as a direct Telnet session is ready.
-      // Web Telnet has its own command protocol and is intentionally left unchanged.
-      telnet.write('send dev-get-info\r\n');
       return true;
     } catch (error) {
       logTelnetConnection('连接失败：' + error.message);
@@ -809,8 +806,8 @@ const handlers = {
       event({ type: 'disconnected', message: result?.message || 'SSH 连接已断开' });
       return result || null;
     } catch (error) {
-      event({ type: 'disconnected', message: 'SSH 连接已断开；跳板机端口释放失败：' + error.message });
-      throw new Error('SSH 连接已断开；跳板机端口释放失败：' + error.message);
+      event({ type: 'disconnected', message: 'SSH 连接已断开；远端清理失败：' + error.message });
+      throw new Error('SSH 连接已断开；远端清理失败：' + error.message);
     }
   },
   list: async directory => {
@@ -1187,6 +1184,6 @@ app.on('before-quit', e => {
   if (quitting) return;
   e.preventDefault(); quitting = true;
   clearTimeout(updateTimer); clearInterval(updateInterval);
-  const releasing = disconnect({ releasePort: true }).catch(error => console.error('退出时跳板机端口释放失败：', error.message));
+  const releasing = disconnect({ releasePort: true }).catch(error => console.error('退出时 SSH 远端清理失败：', error.message));
   Promise.allSettled([updater?.dispose(), releasing, saveQueue, credentials?.queue, telnetOutputQueue, telnetConnectionLogQueue, ...telnetSetups, sshTerminal.drain()]).then(() => saveQueue).finally(() => fsp.rm(cacheRoot, { recursive: true, force: true })).finally(() => app.quit());
 });

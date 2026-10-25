@@ -57,3 +57,23 @@ test('jump downloads and extractions belong to the saved jump profile', () => {
   assert.equal(downloadPath(root, names.archiveOwner(base), '/system/log/app.log', date), path.join(root, '客户A跳板机', 'log', '2026-10-23_18', 'app.log'));
   assert.equal(extractionPath(root, names.archiveOwner(base), '/system/log/app.log.gz', date), path.join(root, '客户A跳板机', 'log', '2026-10-23_18', 'app.log'));
 });
+
+
+test('terminal logs identify locomotives, devices, endpoints and preserve Chinese labels', () => {
+  const direct = { name: '机车 HXD3-1234', host: '192.168.20.7', port: 23 };
+  assert.equal(names.telnetLogTarget(direct), '机车_HXD3-1234--192.168.20.7_23');
+  assert.notEqual(names.telnetLogTarget(direct), names.telnetLogTarget({ ...direct, port: 2323 }));
+  const web = { device: '2098267890303311', deviceName: '机车1234', name: '成都', address: 'http://10.0.0.1:8080' };
+  const target = names.telnetLogTarget(web);
+  assert.ok(target.startsWith('机车1234--设备-2098267890303311--成都--'));
+  assert.notEqual(target, names.telnetLogTarget({ ...web, device: '2098267890303312' }));
+  assert.notEqual(target, names.telnetLogTarget({ ...web, address: 'http://10.0.0.2:8080' }));
+  assert.ok(names.terminalLogTarget('设备A--root@127.0.0.1_2220').includes('设备A'));
+  for (const value of ['../../outside', '..', 'CON', '机车'.repeat(200)]) {
+    const safe = names.terminalLogTarget(value);
+    assert.ok(!/[<>:"/\\|?*\x00-\x1f]/.test(safe));
+    assert.ok(!['.', '..', 'CON'].includes(safe));
+    assert.ok(Buffer.byteLength(safe) <= 160);
+  }
+  assert.notEqual(names.terminalLogTarget('机车'.repeat(200) + 'A'), names.terminalLogTarget('机车'.repeat(200) + 'B'));
+});

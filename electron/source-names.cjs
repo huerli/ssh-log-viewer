@@ -18,6 +18,19 @@ function sourceIdentity(profile) {
   if (Buffer.byteLength(tag) > 96) tag = fit(tag, 85) + '--' + crypto.createHash('sha256').update(label + endpoint + via).digest('hex').slice(0, 8);
   return { tag, label: `${label ? profile.name + ' · ' : ''}${profile.username}@${profile.host}:${Number(profile.port || 22)}${profile.jump?.enabled ? `（经 ${profile.jump.username}@${profile.jump.host}:${Number(profile.jump.port || 22)}）` : ''}` };
 }
+// Keep readable Unicode labels while bounding portable directory names.
+function terminalLogTarget(value) {
+  const original = String(value).trim();
+  let tag = clean(original);
+  if (tag === '.' || tag === '..' || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(tag)) tag = '_' + tag;
+  if (Buffer.byteLength(tag) > 160) tag = fit(tag, 148) + '--' + crypto.createHash('sha256').update(original).digest('hex').slice(0, 10);
+  return tag;
+}
+function telnetLogTarget({ host, port = 23, name = '', device, deviceName = '', address = '' }) {
+  return terminalLogTarget(device
+    ? `${deviceName ? deviceName + '--' : ''}设备-${device}--${name ? name + '--' : ''}${address}`
+    : `${name ? name + '--' : ''}${host}_${port}`);
+}
 function archiveOwner(profile) {
   if (!profile.jump?.enabled) return profile.host;
   return profile.jumpName || profile.jump.name || profile.jump.host;
@@ -46,4 +59,4 @@ function extractionPath(root, host, remote, date = new Date()) {
   const folder = fit(name, 240);
   return path.join(path.dirname(archive), !folder || folder === '.' || folder === '..' ? 'archive' : folder);
 }
-module.exports = { sourceIdentity, sourceFilename, downloadPath, extractionPath, archiveOwner };
+module.exports = { terminalLogTarget, telnetLogTarget, sourceIdentity, sourceFilename, downloadPath, extractionPath, archiveOwner };

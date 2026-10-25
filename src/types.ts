@@ -41,8 +41,8 @@ declare global {
       webTelnetPassword(address: string, username: string, password: string, remember: boolean): Promise<boolean>;
       webTelnetSearchDevices(address: string, keyword: string): Promise<{ number: string; name: string; online: boolean }[]>;
       webTelnetLogin(address: string, username: string, password: string): Promise<{ tenantId?: string }>;
-      webTelnetConnect(address: string, device: string, token: string): Promise<void>;
-      telnetConnect(host: string, port: number): Promise<void>;
+      webTelnetConnect(address: string, device: string, token: string, identity?: { name?: string; deviceName?: string }): Promise<void>;
+      telnetConnect(host: string, port: number, name?: string): Promise<void>;
       telnetWrite(text: string): Promise<void>;
       telnetClose(): Promise<void>;
       downloadedFiles(): Promise<string[]>;

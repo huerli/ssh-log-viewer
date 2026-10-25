@@ -8,13 +8,19 @@ const STATUS = utils.sftp.STATUS_CODE;
 async function createServer(root, options = {}) {
   const key = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey;
   const clients = new Set();
-  const requests = [];
+  const requests = [], commands = [];
   const shells = [], pendingShells = [];
   const server = new Server({ hostKeys: [key] }, client => {
     clients.add(client); client.on('close', () => clients.delete(client)); client.on('error', () => {});
     client.on('authentication', ctx => ctx.method === 'password' && ctx.username === 'tester' && ctx.password === 'fixture-password' ? ctx.accept() : ctx.reject());
     client.on('ready', () => client.on('session', accept => {
       const session = accept();
+      session.on('exec', (acceptExec, rejectExec, info) => {
+        if (!info.command.includes('REVERSE_WORKER_ABSENT')) return rejectExec();
+        commands.push(info.command);
+        const stream = acceptExec();
+        Promise.resolve().then(() => options.exec ? options.exec({ command: info.command, stream, client }) : (stream.write('REVERSE_WORKER_ABSENT\n'), stream.exit(0), stream.end())).catch(error => { stream.stderr.write(error.message); stream.exit(1); stream.end(); });
+      });
       if (options.shell) {
         const shell = { input: '', pty: null, windows: [], closed: false, channel: null };
         session.on('pty', (acceptPty, _reject, info) => { shell.pty = info; acceptPty(); });
@@ -74,6 +80,6 @@ async function createServer(root, options = {}) {
     }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { port: server.address().port, get count() { return clients.size; }, requests, shells, releaseShells: () => { for (const open of pendingShells.splice(0)) open(); }, close: () => { for (const client of clients) client.end(); return new Promise(resolve => server.close(resolve)); } };
+  return { port: server.address().port, get count() { return clients.size; }, requests, commands, shells, releaseShells: () => { for (const open of pendingShells.splice(0)) open(); }, close: () => { for (const client of clients) client.end(); return new Promise(resolve => server.close(resolve)); } };
 }
 module.exports = { createServer };

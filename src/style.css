@@ -54,11 +54,20 @@
 *{box-sizing:border-box}
 body{margin:0}
 button,input,select{font:inherit}
-button{background:var(--control);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;cursor:pointer;white-space:nowrap}
-button:hover{background:var(--hover);border-color:var(--border)}
+button{background:var(--control);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;cursor:pointer;white-space:nowrap;transition:transform 160ms ease,box-shadow 160ms ease,background-color 160ms ease,border-color 160ms ease}
+button:hover:not(:disabled){background:var(--hover);border-color:var(--border)}
+@media(hover:hover) and (pointer:fine){
+  button:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 3px 7px #00000026}
+}
+button:active:not(:disabled){transform:translateY(0) scale(.98);box-shadow:0 1px 2px #0000001a;transition-duration:80ms}
+button:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){
+  button{transition:none}
+  button:hover:not(:disabled),button:active:not(:disabled){transform:none}
+}
 button:disabled{opacity:.4;cursor:default}
 .primary{background:var(--accent);border-color:var(--accent);color:white}
-.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.primary:hover:not(:disabled){background:var(--accent-hover);border-color:var(--accent-hover)}
 input,select{background:var(--input);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:0;padding:8px 9px;outline:none}
 input:focus,select:focus{border-color:var(--accent-text)}
 input[type=checkbox]{accent-color:var(--accent)}
@@ -311,7 +320,7 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 
 .command-button-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border, #cbd5e1); border-radius: 4px; }
 .command-button-bar > select { width: 140px; flex: 0 0 140px; }
-.command-buttons { display: flex; align-items: center; gap: 4px; overflow-x: auto; flex: 1; min-width: 0; min-height: 30px; }
+.command-buttons { display: flex; align-items: center; gap: 4px; overflow-x: auto; flex: 1; min-width: 0; min-height: 30px; padding: 3px 0; }
 .command-buttons button { flex-shrink: 0; white-space: nowrap; border-radius: 3px; padding: 5px 12px; }
 .command-menu-shade { position: fixed; inset: 0; z-index: 110; }
 .command-editor { padding: 12px; border: 1px solid var(--border, #cbd5e1); border-radius: 4px; }
@@ -551,7 +560,7 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .command-groups-heading small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
 .command-groups-body { min-height: 0; overflow: auto; padding: 4px 24px 20px; }
 .command-group-list { max-height: 42vh; overflow: auto; }
-.command-group-row { display: grid; grid-template-columns: minmax(140px, 1fr) auto 34px 34px auto; align-items: end; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.command-group-row { display: grid; grid-template-columns: minmax(140px, 1fr) auto 34px 34px auto auto; align-items: end; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--border); }
 .command-group-row:last-child { border-bottom: 0; }
 .command-group-row > label { display: grid; gap: 6px; min-width: 0; }
 .command-group-row > label > span { font-size: 11px; color: var(--muted); }
@@ -567,7 +576,7 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .command-groups-actions span { color: var(--muted); font-size: 11px; }
 .command-groups-actions button { min-width: 80px; min-height: 36px; }
 .command-groups-empty { margin: 20px 0; color: var(--muted); font-size: 12px; }
-@media(max-width:680px) { .command-group-row { grid-template-columns: 1fr auto auto auto; } .command-group-row > label { grid-column: 1 / -1; } .command-groups-heading, .command-groups-footer { padding: 16px; } .command-groups-body { padding: 0 16px 16px; } }
+@media(max-width:680px) { .command-group-row { grid-template-columns: 1fr auto auto auto auto; } .command-group-row > label { grid-column: 1 / -1; } .command-groups-heading, .command-groups-footer { padding: 16px; } .command-groups-body { padding: 0 16px 16px; } }
 
 .single-command-dialog .command-edit-form { grid-template-columns: minmax(0, 1fr) auto; }
 .single-command-dialog .command-name-field { grid-column: auto; }

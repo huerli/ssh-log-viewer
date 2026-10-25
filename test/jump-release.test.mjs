@@ -21,12 +21,12 @@ const listening = port => new Promise(resolve => {
 });
 const reply = (stream, output, code = 0) => { stream.write(output); stream.exit(code); stream.end(); };
 
-async function fixture(run, exec) {
+async function fixture(run, exec, targetOptions = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'viewer-release-'));
   let target, jump, reverse, unrelated, session;
   try {
     await mkdir(path.join(root, 'system/log'), { recursive: true });
-    target = await createServer(root);
+    target = await createServer(root, targetOptions);
     jump = await createJump([], { exec });
     reverse = await reverseTunnel(jump, target.port);
     unrelated = await reverseTunnel(jump, target.port);
@@ -52,6 +52,8 @@ test('explicit jump release waits for remote exec while authenticated and frees 
     const releasing = session.releaseJumpPort().then(() => { completed = true; });
     await started;
     assert.equal(completed, false, 'release awaits remote completion');
+    assert.equal(value.target.commands.length, 1, 'device worker cleanup must finish before jump cleanup');
+    assert.ok(value.target.commands[0].includes('expected_port=' + reverse.port));
     assert.equal(session.jump._sock.destroyed, false, 'jump connection remains open to run cleanup');
     assert.equal(await listening(reverse.port), true, 'listener remains bound until remote cleanup');
     finishExec();
@@ -114,9 +116,21 @@ test('a direct SSH session does not attempt jump cleanup', async () => {
     session = await connectSession(direct, options());
     const result = await session.releaseJumpPort();
     assert.equal(result.released, false);
+    assert.equal(target.commands.length, 1, 'direct disconnect checks the device worker without jump cleanup');
     session.close();
   } finally {
     session?.close(); if (target) await target.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test('worker cleanup failure still attempts jump cleanup and reports the device failure', async () => {
+  await fixture(async ({ session, jump }) => {
+    await assert.rejects(session.releaseJumpPort(), /worker denied/);
+    assert.equal(jump.commands.length, 1, 'jump cleanup remains available after target cleanup failure');
+    session.close();
+  }, ({ stream }) => reply(stream, 'JUMP_PORT_ABSENT\n'), {
+    exec: ({ stream }) => { stream.stderr.write('worker denied'); reply(stream, '', 1); },
+  });
 });

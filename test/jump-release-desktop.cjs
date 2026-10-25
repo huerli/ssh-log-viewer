@@ -34,6 +34,8 @@ const listening = port => new Promise(resolve => {
       }
     } });
     reverse = await reverseTunnel(jump, target.port); other = await reverseTunnel(jump, target.port);
+    await fs.mkdir(path.join(temp, 'config'), { recursive: true });
+    await fs.writeFile(path.join(temp, 'config/settings.json'), JSON.stringify({ sshEnabled: true, telnetEnabled: true, autoCheckUpdates: false }));
     app = await _electron.launch({ ...(process.env.VIEWER_TEST_EXECUTABLE ? { executablePath: process.env.VIEWER_TEST_EXECUTABLE, args: [] } : { args: ['.'] }), cwd: path.resolve(__dirname, '..'), env: { ...process.env, VIEWER_DATA_DIR: path.join(temp, 'config') } });
     await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
     const page = await app.firstWindow();

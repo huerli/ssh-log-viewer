@@ -90,11 +90,26 @@ async function connectSession(profile, { signal, verify, report = () => {}, onEr
       client, jump, sftp, identity,
       async releaseJumpPort() {
         const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(String(profile.host).trim().toLowerCase());
-        if (!jump || !loopback) return { released: false, message: 'SSH 连接已断开' };
+        const tunneled = Boolean(jump && loopback);
         const port = Number(profile.port || 22);
-        if (port === Number(profile.jump.port || 22)) throw new Error('目标端口与跳板机 SSH 登录端口相同，无法释放');
-        report(`正在释放跳板机 localhost:${port} 监听端口…`);
-        return require('./jump-port.cjs').releaseJumpPort(jump, port);
+        if (tunneled && port === Number(profile.jump.port || 22)) throw new Error('目标端口与跳板机 SSH 登录端口相同，无法释放');
+        report('正在停止设备上的持久或手动反向 SSH 隧道…');
+        let worker, workerError;
+        try {
+          worker = await require('./reverse-ssh-worker.cjs').stopReverseSshWorker(client, tunneled
+            ? { port, host: profile.jump.host, sshPort: Number(profile.jump.port || 22), tunneled: true, onProgress: report }
+            : { onProgress: report });
+        } catch (error) { workerError = error; }
+        let result = { released: false, message: 'SSH 连接已断开' };
+        let releaseError;
+        if (tunneled) {
+          report(`正在释放跳板机 localhost:${port} 监听端口…`);
+          try { result = await require('./jump-port.cjs').releaseJumpPort(jump, port); } catch (error) { releaseError = error; }
+        }
+        if (workerError || releaseError) throw new Error([workerError && '设备反向 SSH 清理失败：' + workerError.message, releaseError && '跳板机端口释放失败：' + releaseError.message].filter(Boolean).join('；'));
+        if (worker?.stopped) result.message = (worker.verificationPending ? '已停止持久隧道的重连进程，隧道关闭后无法核验其余进程；' : '已停止匹配的持久或手动反向 SSH 隧道；') + result.message;
+        else if (worker?.stopRequested) result.message = '已提交反向 SSH 停止请求，隧道关闭后无法核验设备进程；' + result.message;
+        return result;
       },
       close: () => { signal.removeEventListener('abort', abort); close(); },
     };

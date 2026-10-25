@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import { spawn, execFile } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, access, link, copyFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, access, link, symlink, copyFile, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,10 +16,10 @@ const linuxOnly = { skip: process.platform !== 'linux' };
 
 // Execute exactly the generated remote shell command against isolated local
 // listener processes, using the same channel events supplied by ssh2.
-function localClient() {
+function localClient(env = process.env) {
   const client = new EventEmitter();
   client.exec = (command, callback) => {
-    const process = spawn('sh', ['-c', command]);
+    const process = spawn('sh', ['-c', command], { env });
     const channel = new EventEmitter();
     channel.stderr = process.stderr;
     channel.close = () => process.kill();
@@ -196,4 +196,21 @@ test('a real OpenSSH reverse tunnel is released without closing other sessions',
   assert.equal(await accepts(otherPort), true);
   assert.equal((await releaseJumpPort(cleanup, targetPort)).released, false);
   assert.equal((await releaseJumpPort(cleanup, otherPort)).released, true);
+});
+
+
+test('BusyBox ash and applets release only the selected listener', linuxOnly, async t => {
+  let busybox;
+  for (const candidate of ['/usr/bin/busybox', '/bin/busybox']) {
+    try { await access(candidate); busybox = candidate; break; } catch {}
+  }
+  if (!busybox) { t.skip('BusyBox is unavailable'); return; }
+  const tools = await mkdtemp(path.join(os.tmpdir(), 'viewer-jump-busybox-'));
+  t.after(() => rm(tools, { recursive: true, force: true }));
+  for (const applet of ['sh', 'awk', 'readlink', 'tr', 'od', 'sleep', 'ls']) await symlink(busybox, path.join(tools, applet));
+  const target = await listeningProcess(t);
+  const other = await listeningProcess(t);
+  assert.equal((await releaseJumpPort(localClient({ ...process.env, PATH: tools }), target.ports[0])).released, true);
+  assert.equal(await accepts(target.ports[0]), false);
+  assert.equal(await accepts(other.ports[0]), true);
 });

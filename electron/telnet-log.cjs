@@ -5,7 +5,7 @@ const { randomUUID } = require('node:crypto');
 async function createTelnetLog(root, target, now = new Date()) {
   const part = value => String(value).padStart(2, '0');
   const date = `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}`;
-  const host = String(target).trim().replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+$/, '_') || '_';
+  const host = require('./source-names.cjs').terminalLogTarget(target);
   const folder = path.join(root, 'telnet', date, host);
   await fs.mkdir(folder, { recursive: true, mode: 0o700 });
   const time = `${part(now.getHours())}-${part(now.getMinutes())}-${part(now.getSeconds())}`;

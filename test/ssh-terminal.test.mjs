@@ -97,6 +97,8 @@ test('SSH session log paths are dated, unique and contain unsafe host strings', 
     const second = await createSshLog(root, '192.168.1.2', now);
     assert.equal(path.dirname(first), path.join(root, 'ssh', '2026-10-24', '192.168.1.2'));
     assert.notEqual(first, second);
+    const named = await createSshLog(root, '机车1234--root@127.0.0.1_2220', now);
+    assert.equal(path.basename(path.dirname(named)), '机车1234--root@127.0.0.1_2220');
     const unsafe = await createSshLog(root, '../../outside', now);
     assert.ok(unsafe.startsWith(path.join(root, 'ssh', '2026-10-24') + path.sep));
   } finally { await rm(root, { recursive: true, force: true }); }
