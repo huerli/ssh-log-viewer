@@ -1155,7 +1155,7 @@ app.whenReady().then(async () => {
     cacheDir: path.join(app.getPath('userData'), 'updates'), isPackaged: app.isPackaged,
     fetch: require('./updater-fetch.cjs').createUpdateFetch(net),
     emit: update => event({ type: 'update-state', update: { ...update, autoCheck: config.autoCheckUpdates !== false } }),
-    openInstaller: require('./update-installer.cjs').createInstaller({ openPath: file => shell.openPath(file) }),
+    openInstaller: require('./update-installer.cjs').createInstaller({ platform: process.platform, appPath: app.isPackaged ? path.resolve(process.resourcesPath, '..', '..') : undefined, openPath: file => shell.openPath(file) }),
     openReleasePage: url => shell.openExternal(url),
     revealInstaller: file => shell.showItemInFolder(file), quit: () => app.quit(),
     ...updateOptions,

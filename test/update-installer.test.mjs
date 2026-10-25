@@ -34,3 +34,16 @@ test('Linux rejects invalid paths; other platforms retain their default installe
   await createInstaller({ platform: 'win32', openPath: async file => { opened = file; return ''; } })('C:\\update.exe');
   assert.equal(opened, 'C:\\update.exe');
 });
+
+test('macOS packaged apps stage a background DMG replacement and relaunch', async () => {
+  let spawned;
+  const install = createInstaller({ platform: 'darwin', appPath: '/Applications/SSH Log Viewer.app', spawn: (...args) => {
+    spawned = args;
+    return { unref() {} };
+  } });
+  await install('/tmp/ssh-log-viewer-update.dmg');
+  assert.equal(spawned[0], '/bin/sh');
+  assert.equal(spawned[1][1], '/tmp/ssh-log-viewer-update.dmg');
+  assert.equal(spawned[1][2], '/Applications/SSH Log Viewer.app');
+  await import('node:fs/promises').then(fs => fs.rm(spawned[1][0], { force: true, recursive: true }));
+});

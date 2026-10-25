@@ -1,6 +1,6 @@
 {
   "name": "ssh-log-viewer",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "packageManager": "pnpm@11.25.0",
   "description": "SSH remote log viewer with disk-backed indexing",
   "private": true,
