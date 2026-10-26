@@ -643,3 +643,10 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .log-drop-zone{position:relative;display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
 .log-drop-zone.dragging{outline:2px dashed var(--accent-text);outline-offset:-4px}
 .log-drop-hint{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:var(--panel);opacity:.95;color:var(--accent-text);font-size:20px;pointer-events:none}
+
+.upload-drop-zone{position:relative;overflow-anchor:none}
+.upload-drop-zone.dragging{outline:2px dashed var(--accent-text);outline-offset:-3px}
+.upload-drop-hint{position:sticky;top:0;z-index:2;padding:18px 10px;background:var(--panel);color:var(--accent-text);text-align:center;pointer-events:none;overflow-wrap:anywhere}
+
+.overwrite-upload{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;color:var(--muted)}
+.overwrite-upload input{margin:0}

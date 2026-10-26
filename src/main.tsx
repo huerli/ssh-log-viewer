@@ -615,6 +615,41 @@ function App() {
     } catch (error) { fail(error); }
     finally { dropOpening.current = false; }
   }
+  const directoryRef = useRef(directory);
+  directoryRef.current = directory;
+  const [uploading, setUploading] = useState(false);
+  const [overwriteUpload, setOverwriteUpload] = useState(false);
+  const [draggingUpload, setDraggingUpload] = useState(false);
+  const uploadLock = useRef(false);
+  async function uploadLocalFiles(files?: string[]) {
+    if (uploadLock.current) return;
+    if (!connection || localMode) throw new Error('请连接 SSH 并切换到远程目录后上传');
+    if (task?.state === 'running') throw new Error('请等待当前任务完成或取消后上传');
+    uploadLock.current = true;
+    const target = directory;
+    setUploading(true);
+    try {
+      const result = await api.upload(target, files, overwriteUpload);
+      if (!result) { setMessage('已取消选择上传文件'); return; }
+      setMessage(`上传${result.cancelled ? '已取消' : '完成'} · 成功 ${result.completedFiles} 个 · 失败 ${result.failedFiles} 个`);
+      if (result.errors.length) setError(result.errors.join('；'));
+      // Refresh only if the user is still browsing the same remote directory.
+      if (directoryRef.current === target) {
+        const listing = await api.list(target);
+        setEntries(current => directoryRef.current === target ? listing.entries : current);
+      }
+    } finally { uploadLock.current = false; setUploading(false); }
+  }
+  async function dropUploadFiles(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault(); setDraggingUpload(false);
+    const files = Array.from(event.dataTransfer.files);
+    if (!files.length) return;
+    await run(async () => {
+      const paths = files.map(file => api.getPathForFile(file));
+      if (paths.some(path => !path)) throw new Error('无法获取本地路径，请从文件管理器拖入文件');
+      await uploadLocalFiles(paths);
+    });
+  }
   async function browseLocal(path?: string) {
     const response = path ? await api.listLocal(path) : await api.chooseLocalFolder();
     if (!response) return;
@@ -868,9 +903,14 @@ function App() {
         {activePattern && <small className="pattern-hint">{patternError || `匹配 ${matchedFileCount} 个文件 · 搜索覆盖匹配日志及 .gz · 支持日期/关键词片段`}</small>}
         {localMode && canBrowse && <div className="batch-actions"><button disabled={!!patternError || !matchedArchiveCount || task?.state === 'running'} onClick={() => void extractLocalMatches()}>解压匹配文件（{matchedArchiveCount}）</button></div>}
         {!localMode && activePattern && <div className="batch-actions"><button disabled={!connection || !!patternError || !matchedFileCount || task?.state === 'running'} onClick={() => void transferMatches(false)}>全部下载</button><button disabled={!connection || !!patternError || !matchedFileCount || task?.state === 'running'} onClick={() => void transferMatches(true)}>全部下载并解压</button></div>}
-        <div className="file-list">{canBrowse && <button className="file-entry" disabled={localMode && browseDirectory === localListing?.root} onClick={() => void run(() => browse(join(browseDirectory, '..')))}>↰ 上级目录</button>}{visibleEntries.map(entry => <button key={entry.name} className={`file-entry ${selectedFile === join(browseDirectory, entry.name) ? 'selected' : ''}`} title={`${entry.name}\n${new Date(entry.mtime * 1000).toLocaleString()}`} onClick={() => { setSelectedFile(join(browseDirectory, entry.name)); if (!entry.directory) { setSelectionListPattern(activePattern); setFilePattern(entry.name); setFilenameFromSelection(true); } }} onDoubleClick={() => entry.directory ? void run(() => browse(join(browseDirectory, entry.name))) : void open(() => viewFile(join(browseDirectory, entry.name)))}><span className={entry.directory ? 'folder' : 'file'}>{entry.directory ? '▸' : '≡'}</span><span>{entry.name}</span><small>{entry.directory ? '' : size(entry.size)}</small></button>)}{!canBrowse && <p className="empty-inline">{localMode ? '请打开本地文件夹' : '连接后浏览远程目录'}</p>}{canBrowse && !visibleEntries.length && <p className="empty-inline">没有匹配的文件</p>}</div>
-        {task && <div className="task-card"><strong>{task.kind} · {task.state === 'running' ? '进行中' : task.state === 'done' ? '完成' : task.state === 'cancelled' ? '已取消' : '失败'}</strong>{task.files !== undefined && <small>{task.fileIndex ? `${task.fileIndex}/${task.files} · ${task.phase || ''} · ${task.file || ''}` : `共 ${task.files} 个文件`} · 成功 {task.completedFiles || 0} · 失败 {task.failedFiles || 0}</small>}{task.currentBytes !== undefined && task.state === 'running' && <small>当前文件 {size(task.currentBytes)}{task.currentSize ? ` / ${size(task.currentSize)}` : ''}</small>}<span>{size(task.bytes)}{task.size ? ` / ${size(task.size)}` : ''}</span>{task.origin && <small title={task.origin}>来源：{task.origin}</small>}{task.destination && <small>{task.destination}</small>}{task.error && <small>{task.error}</small>}{task.state !== 'running' && extractedPaths.length > 0 && <select aria-label={task.kind?.includes('解压') ? '打开解压文件' : '打开已下载文件'} value="" onChange={e => e.target.value && void open(() => api.openExtracted(e.target.value), undefined, false, 'extracted')}><option value="">打开已下载/解压文件…</option>{extractedPaths.map(file => <option key={file} value={file}>{file.split('/').pop()}</option>)}</select>}{task.state === 'running' && <button onClick={() => void run(() => api.cancelTask(task.id!))}>取消任务</button>}</div>}
-        <div className="file-actions"><button disabled={!selectedFile || openingState} onClick={() => void open(() => viewFile(selectedFile))}>查看</button><button disabled={localMode || !selectedFile} onClick={() => void run(async () => { const result = await api.download(selectedFile) as { destination: string } | null; if (result) { setExtractedPaths([result.destination]); setSearchScope('extracted'); } })}>下载</button><button disabled={task?.state === 'running' || (localMode && !selectedFile ? !!patternError || !matchedArchiveCount : !canExtractSelection)} title={localMode && !selectedFile ? '解压当前列表中所有匹配的压缩文件' : '解压选中的压缩文件'} onClick={() => void (localMode && !selectedFile ? extractLocalMatches() : extract(selectedFile))}>{localMode && !selectedFile ? '解压匹配' : '解压'}</button></div>
+        <div className={`file-list upload-drop-zone${draggingUpload ? ' dragging' : ''}`} aria-label="文件列表上传区域"
+          onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); const allowed = !localMode && !!connection && !uploading && task?.state !== 'running'; event.dataTransfer.dropEffect = allowed ? 'copy' : 'none'; setDraggingUpload(allowed); } }}
+          onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingUpload(false); }}
+          onDrop={event => void dropUploadFiles(event)}>
+          {draggingUpload && <div className="upload-drop-hint">松开以上传到<br /><strong>{directory}</strong></div>}
+          {canBrowse && <button className="file-entry" disabled={localMode && browseDirectory === localListing?.root} onClick={() => void run(() => browse(join(browseDirectory, '..')))}>↰ 上级目录</button>}{visibleEntries.map(entry => <button key={entry.name} className={`file-entry ${selectedFile === join(browseDirectory, entry.name) ? 'selected' : ''}`} title={`${entry.name}\n${new Date(entry.mtime * 1000).toLocaleString()}`} onClick={() => { setSelectedFile(join(browseDirectory, entry.name)); if (!entry.directory) { setSelectionListPattern(activePattern); setFilePattern(entry.name); setFilenameFromSelection(true); } }} onDoubleClick={() => entry.directory ? void run(() => browse(join(browseDirectory, entry.name))) : void open(() => viewFile(join(browseDirectory, entry.name)))}><span className={entry.directory ? 'folder' : 'file'}>{entry.directory ? '▸' : '≡'}</span><span>{entry.name}</span><small>{entry.directory ? '' : size(entry.size)}</small></button>)}{!canBrowse && <p className="empty-inline">{localMode ? '请打开本地文件夹' : '连接后浏览远程目录'}</p>}{canBrowse && !visibleEntries.length && <p className="empty-inline">没有匹配的文件</p>}</div>
+        {task && <div className="task-card"><strong>{task.kind} · {task.state === 'running' ? '进行中' : task.state === 'done' ? '完成' : task.state === 'cancelled' ? '已取消' : '失败'}</strong>{task.files !== undefined && <small>{task.fileIndex ? `${task.fileIndex}/${task.files} · ${task.phase || ''} · ${task.file || ''}` : `共 ${task.files} 个文件`} · 成功 {task.completedFiles || 0} · 失败 {task.failedFiles || 0}</small>}{task.currentBytes !== undefined && task.state === 'running' && <small>当前文件 {size(task.currentBytes)}{task.currentSize ? ` / ${size(task.currentSize)}` : ''}</small>}<span>{size(task.bytes)}{task.size ? ` / ${size(task.size)}` : ''}</span>{task.origin && <small title={task.origin}>来源：{task.origin}</small>}{task.destination && <small>{task.destination}</small>}{task.error && <small>{task.error}</small>}{task.state !== 'running' && task.kind !== '上传' && extractedPaths.length > 0 && <select aria-label={task.kind?.includes('解压') ? '打开解压文件' : '打开已下载文件'} value="" onChange={e => e.target.value && void open(() => api.openExtracted(e.target.value), undefined, false, 'extracted')}><option value="">打开已下载/解压文件…</option>{extractedPaths.map(file => <option key={file} value={file}>{file.split('/').pop()}</option>)}</select>}{task.state === 'running' && <button onClick={() => void run(() => api.cancelTask(task.id!))}>取消任务</button>}</div>}
+        <div className="file-actions"><button title="选择本地文件上传到当前远程目录" disabled={localMode || !connection || uploading || task?.state === 'running'} onClick={() => void run(() => uploadLocalFiles())}>{uploading ? '上传中…' : '上传'}</button><label className="overwrite-upload"><input type="checkbox" checked={overwriteUpload} disabled={uploading || localMode || !connection} onChange={e => setOverwriteUpload(e.target.checked)} />强制覆盖</label><button disabled={!selectedFile || openingState} onClick={() => void open(() => viewFile(selectedFile))}>查看</button><button disabled={localMode || !selectedFile} onClick={() => void run(async () => { const result = await api.download(selectedFile) as { destination: string } | null; if (result) { setExtractedPaths([result.destination]); setSearchScope('extracted'); } })}>下载</button><button disabled={task?.state === 'running' || (localMode && !selectedFile ? !!patternError || !matchedArchiveCount : !canExtractSelection)} title={localMode && !selectedFile ? '解压当前列表中所有匹配的压缩文件' : '解压选中的压缩文件'} onClick={() => void (localMode && !selectedFile ? extractLocalMatches() : extract(selectedFile))}>{localMode && !selectedFile ? '解压匹配' : '解压'}</button></div>
         </>}
       </aside>
       <main className={'main-panel unified-terminal ' + (telnetPage ? 'show-telnet' : 'show-log')}>

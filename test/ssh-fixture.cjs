@@ -39,7 +39,7 @@ async function createServer(root, options = {}) {
       }
       session.on('sftp', acceptSftp => {
       const sftp = acceptSftp(), handles = new Map(); let next = 1;
-      for (const type of ['REALPATH', 'STAT', 'LSTAT', 'OPENDIR', 'READDIR', 'OPEN', 'READ']) {
+      for (const type of ['REALPATH', 'STAT', 'LSTAT', 'OPENDIR', 'READDIR', 'OPEN', 'READ', 'WRITE', 'REMOVE']) {
         sftp.on(type, () => requests.push(type));
       }
       const resolve = name => {
@@ -64,13 +64,18 @@ async function createServer(root, options = {}) {
         value.sent = true;
         sftp.name(id, value.entries.map(name => ({ filename: name, longname: name, attrs: attrs(fs.statSync(path.join(value.directory, name))) })));
       });
-      sftp.on('OPEN', (id, name) => { try { fs.open(resolve(name), 'r', (e, fd) => e ? status(id, e) : sftp.handle(id, handle({ fd }))); } catch (e) { status(id, e); } });
+      sftp.on('OPEN', (id, name, flags) => { try { fs.open(resolve(name), utils.sftp.flagsToString(flags), (e, fd) => e ? status(id, e) : sftp.handle(id, handle({ fd }))); } catch (e) { status(id, e); } });
       sftp.on('FSTAT', (id, h) => { const value = get(h); if (!value?.fd) return status(id); fs.fstat(value.fd, (e, stat) => e ? status(id, e) : sftp.attrs(id, attrs(stat))); });
       sftp.on('READ', (id, h, offset, length) => {
         const value = get(h); if (!value?.fd) return status(id);
         const buffer = Buffer.alloc(Math.min(length, 65536));
         fs.read(value.fd, buffer, 0, buffer.length, offset, (e, bytes) => e ? status(id, e) : bytes ? sftp.data(id, buffer.subarray(0, bytes)) : sftp.status(id, STATUS.EOF));
       });
+      sftp.on('WRITE', (id, h, offset, data) => {
+        const value = get(h); if (!value?.fd) return status(id);
+        fs.write(value.fd, data, 0, data.length, offset, (e, bytes) => e ? status(id, e) : bytes === data.length ? sftp.status(id, STATUS.OK) : status(id));
+      });
+      sftp.on('REMOVE', (id, name) => { try { fs.unlink(resolve(name), e => e ? status(id, e) : sftp.status(id, STATUS.OK)); } catch (e) { status(id, e); } });
       sftp.on('CLOSE', (id, h) => {
         const value = get(h); handles.delete(h.readUInt32BE(0));
         if (value?.fd) fs.close(value.fd, () => sftp.status(id, STATUS.OK)); else sftp.status(id, STATUS.OK);

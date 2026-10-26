@@ -13,6 +13,7 @@ const zlib = require('node:zlib');
 const { writeSearchExport } = require('./search-export.cjs');
 const { extractArchive, extractLocalArchive } = require('./archive.cjs');
 const { remoteSource } = require('./remote-source.cjs');
+const { uploadFiles } = require('./sftp-upload.cjs');
 const { CredentialStore, credentialId } = require('./credentials.cjs');
 const { sourceIdentity, downloadPath, extractionPath, archiveOwner, telnetLogTarget, terminalLogTarget } = require('./source-names.cjs');
 
@@ -370,7 +371,7 @@ async function downloadInto(file, folder, signal, report) {
 }
 
 async function runTask(kind, work, origin) {
-  if (tasks.size) throw new Error('已有下载或解压任务，请等待完成或取消');
+  if (tasks.size) throw new Error('已有文件传输或解压任务，请等待完成或取消');
   const id = crypto.randomUUID(), controller = new AbortController();
   tasks.set(id, controller);
   event({ type: 'task', id, kind, origin, state: 'running' });
@@ -1016,6 +1017,23 @@ const handlers = {
     await save();
   },
   cancelTask: id => { tasks.get(id)?.abort(); },
+  upload: async (directory, droppedFiles, overwrite = false) => {
+    const transfer = sftp, owner = connectionOrigin?.label;
+    if (!transfer) throw new Error('请先连接 SSH');
+    const folder = await callSftp('realpath', directory || '.');
+    const attrs = await callSftp('stat', folder);
+    if (!attrs.isDirectory()) throw new Error('上传目标必须是远程文件夹');
+    let files = droppedFiles;
+    if (typeof overwrite !== 'boolean') throw new Error('覆盖选项无效');
+    if (files !== undefined && (!Array.isArray(files) || !files.length || files.length > 1000 || files.some(file => typeof file !== 'string' || !path.isAbsolute(file)))) throw new Error('拖入文件路径无效');
+    if (files === undefined) {
+      const chosen = await dialog.showOpenDialog(win, { title: '上传文件到 ' + folder, properties: ['openFile', 'multiSelections'] });
+      if (chosen.canceled || !chosen.filePaths.length) return null;
+      files = chosen.filePaths;
+    }
+    if (sftp !== transfer) throw new Error('SSH 连接已改变，请重新选择上传目标');
+    return runTask('上传', (signal, report) => uploadFiles(transfer, files, folder, signal, data => report({ ...data, destination: folder }), overwrite), owner);
+  },
   download: file => runTask('下载', (signal, report) => downloadInto(file, config.directories.download, signal, report), connectionOrigin?.label),
   batchTransfer: async (directory, pattern, unpack) => {
     const matcher = (await glob).filenamePattern(pattern);

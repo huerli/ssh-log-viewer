@@ -1,0 +1,63 @@
+const { _electron } = require('playwright');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const assert = require('node:assert/strict');
+const { createServer } = require('./ssh-fixture.cjs');
+(async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'viewer-upload-'));
+  let app, server;
+  try {
+    const remote = path.join(temp, 'remote/system/log'), local = path.join(temp, 'local');
+    await fs.mkdir(remote, { recursive: true }); await fs.mkdir(local);
+    await fs.mkdir(path.join(temp, 'config'));
+    await fs.writeFile(path.join(temp, 'config/settings.json'), JSON.stringify({ sshEnabled: true, telnetEnabled: false, autoCheckUpdates: false }));
+    const file = path.join(local, '上传 中文.bin');
+    const bytes = Buffer.from(Array.from({ length: 300000 }, (_, i) => i % 256));
+    await fs.writeFile(file, bytes);
+    const existing = path.join(local, 'existing.log'); await fs.writeFile(existing, 'new data');
+    await fs.writeFile(path.join(remote, 'existing.log'), 'keep original');
+    server = await createServer(path.join(temp, 'remote'));
+    app = await _electron.launch({ args: ['.'], env: { ...process.env, VIEWER_DATA_DIR: path.join(temp, 'config') } });
+    await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
+    const page = await app.firstWindow();
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    assert.equal(await page.getByRole('button', { name: '上传', exact: true }).isDisabled(), true);
+    await page.locator('.connection-settings-toggle').click();
+    await page.getByLabel('主机', { exact: true }).fill('127.0.0.1');
+    await page.getByLabel('端口', { exact: true }).fill(String(server.port));
+    await page.getByLabel('用户名', { exact: true }).fill('tester');
+    await page.getByLabel('密码', { exact: true }).fill('fixture-password');
+    await page.getByRole('button', { name: '连接', exact: true }).click();
+    await page.locator('.connection-pill.connected').waitFor();
+    await page.locator('.file-entry').filter({ hasText: 'existing.log' }).waitFor();
+    await app.evaluate(({ dialog }, files) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: files }); }, [existing, file]);
+    await page.getByRole('button', { name: '上传', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.task-card')?.textContent.includes('上传 · 完成'));
+    assert.deepEqual(await fs.readFile(path.join(remote, path.basename(file))), bytes);
+    assert.equal(await fs.readFile(path.join(remote, 'existing.log'), 'utf8'), 'keep original');
+    await page.getByLabel('强制覆盖', { exact: true }).check();
+    assert.equal(await page.getByLabel('强制覆盖', { exact: true }).evaluate(e => e.checked), true);
+    const forced = await page.evaluate(file => window.viewer.upload('/system/log', [file], true), existing);
+    assert.equal(forced.completedFiles, 1);
+    assert.equal(await fs.readFile(path.join(remote, 'existing.log'), 'utf8'), 'new data');
+    await page.locator('.file-entry').filter({ hasText: path.basename(file) }).waitFor();
+    assert.match(await page.locator('.task-card').innerText(), /成功 1 · 失败 0/);
+    assert.ok(server.requests.includes('WRITE'));
+    await app.evaluate(({ dialog }) => { dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] }); });
+    await page.getByRole('button', { name: '上传', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.status-bar')?.textContent.includes('已取消选择上传文件'));
+    const dropped = path.join(local, '拖入上传.log'); await fs.writeFile(dropped, 'drop-upload-marker 中文\n');
+    const cdp = await page.context().newCDPSession(page);
+    async function drop(files) {
+      const box = await page.getByLabel('文件列表上传区域', { exact: true }).boundingBox();
+      const data = { items: [], files, dragOperationsMask: 1 };
+      for (const type of ['dragEnter', 'dragOver', 'drop']) await cdp.send('Input.dispatchDragEvent', { type, x: box.x + box.width / 2, y: box.y + box.height / 2, data });
+    }
+    await drop([dropped]);
+    await page.locator('.file-entry').filter({ hasText: '拖入上传.log' }).waitFor();
+    assert.equal(await fs.readFile(path.join(remote, '拖入上传.log'), 'utf8'), 'drop-upload-marker 中文\n');
+    assert.deepEqual(errors, []);
+    console.log('PASS: SFTP multi-file upload, binary/Chinese names, preserve existing files, refresh, picker cancellation, native drag upload');
+  } finally { if (app) await app.close(); if (server) await server.close(); await fs.rm(temp, { recursive: true, force: true }); }
+})().catch(error => { console.error(error); process.exitCode = 1; });

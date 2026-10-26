@@ -21,6 +21,7 @@ declare global {
   const __APP_VERSION__: string;
   interface Window {
     viewer: {
+      upload(directory: string, files?: string[], overwrite?: boolean): Promise<{ paths: string[]; completedFiles: number; failedFiles: number; errors: string[]; cancelled?: boolean } | null>;
       exportJsonConfig(filename: string, content: string): Promise<{ path: string } | null>;
       getPathForFile(file: File): string;
       updateState(): Promise<UpdateState>;
