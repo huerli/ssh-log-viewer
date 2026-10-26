@@ -7,7 +7,8 @@ import crypto from 'node:crypto';
 import updaterModule from '../electron/updater.cjs';
 
 const { createUpdater, compareVersions } = updaterModule;
-const API = 'https://api.github.com/repos/huerli/ssh-log-viewer/releases/latest';
+const API = 'https://64.81.112.231:9443/ssh-log-viewer/latest.json';
+const SERVER = 'https://64.81.112.231:9443/ssh-log-viewer/releases';
 const GITHUB = 'https://github.com/huerli/ssh-log-viewer/releases';
 const json = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
 const sha256 = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -16,7 +17,7 @@ async function fixture(t, options = {}) {
   const cacheDir = await mkdtemp(path.join(os.tmpdir(), 'viewer-updater-'));
   const installer = Buffer.from('fixture installer; never execute this file');
   const metadata = { schemaVersion: 1, version: '0.0.6', platform: 'linux', arch: 'x64', asset: 'ssh-log-viewer-0.0.6-linux.deb', size: installer.length, sha256: sha256(installer) };
-  const asset = name => ({ name, size: name.endsWith('.json') ? Buffer.byteLength(JSON.stringify(metadata)) : installer.length, browser_download_url: `${GITHUB}/download/v0.0.6/${name}` });
+  const asset = name => ({ name, size: name.endsWith('.json') ? Buffer.byteLength(JSON.stringify(metadata)) : installer.length, browser_download_url: `${SERVER}/v0.0.6/${name}` });
   const release = { tag_name: 'v0.0.6', draft: false, prerelease: false, name: 'Version 0.0.6', body: 'Release notes', published_at: '2026-10-24T00:00:00Z', html_url: 'https://untrusted.invalid', assets: [asset('ssh-log-viewer-0.0.6-linux.update.json'), asset(metadata.asset)] };
   const calls = [], emitted = [], opened = [], revealed = [], pages = [];
   const data = { cacheDir, metadata, release, installer, calls, emitted, opened, revealed, pages, quitCount: 0, handler: null };
@@ -110,7 +111,7 @@ test('upper-case V tags and literal plus signs in version-bound GitHub paths are
   f.metadata.asset = 'ssh-log-viewer-0.0.6+build.9-linux.deb';
   f.release.assets[0].name = 'ssh-log-viewer-0.0.6+build.9-linux.update.json';
   f.release.assets[1].name = f.metadata.asset;
-  for (const asset of f.release.assets) asset.browser_download_url = `${GITHUB}/download/${f.release.tag_name}/${asset.name}`;
+  for (const asset of f.release.assets) asset.browser_download_url = `${SERVER}/${f.release.tag_name}/${asset.name}`;
   assert.equal((await f.updater.check()).status, 'available');
   assert.equal((await f.updater.download()).status, 'ready');
 });
@@ -129,7 +130,7 @@ test('Windows and macOS require their exact platform installer and matching arch
     Object.assign(f.metadata, { platform, arch, asset: `ssh-log-viewer-0.0.6-${target}.${extension}` });
     f.release.assets[0].name = `ssh-log-viewer-0.0.6-${target}.update.json`;
     f.release.assets[1].name = f.metadata.asset;
-    for (const asset of f.release.assets) asset.browser_download_url = `${GITHUB}/download/v0.0.6/${asset.name}`;
+    for (const asset of f.release.assets) asset.browser_download_url = `${SERVER}/v0.0.6/${asset.name}`;
     assert.equal((await f.updater.check()).supported, true);
     const downloaded = await f.updater.download();
     assert.equal(downloaded.status, 'ready');
@@ -172,7 +173,7 @@ async function macFixture(t, arch, legacyArch = 'arm64', includeX64 = true) {
     metadata.set(`${name}.update.json`, info);
     installers.set(info.asset, installer);
     for (const [assetName, size] of [[`${name}.update.json`, Buffer.byteLength(JSON.stringify(info))], [info.asset, installer.length]]) {
-      f.release.assets.push({ name: assetName, size, browser_download_url: `${GITHUB}/download/v0.0.6/${assetName}` });
+      f.release.assets.push({ name: assetName, size, browser_download_url: `${SERVER}/v0.0.6/${assetName}` });
     }
   }
   f.handler = url => {
@@ -191,7 +192,7 @@ test('coexisting macOS installers select x64 metadata for Intel and legacy arm64
     assert.equal(state.platform, 'darwin');
     assert.equal(state.arch, arch);
     assert.equal(state.assetName, `${name}.dmg`);
-    assert.deepEqual(f.calls.map(call => call.url), [API, `${GITHUB}/download/v0.0.6/${name}.update.json`]);
+    assert.deepEqual(f.calls.map(call => call.url), [API, `${SERVER}/v0.0.6/${name}.update.json`]);
     const downloaded = await f.updater.download();
     assert.equal(downloaded.status, 'ready');
     assert.equal(path.basename(downloaded.installerPath), `${name}.dmg`);
@@ -223,7 +224,7 @@ test('invalid exact macOS x64 metadata never falls back to a compatible legacy i
     const state = await f.updater.check();
     assert.equal(state.supported, false, JSON.stringify(change));
     assert.equal(state.status, change.platform || change.arch ? 'available' : 'error');
-    assert.deepEqual(f.calls.map(call => call.url), [API, `${GITHUB}/download/v0.0.6/ssh-log-viewer-0.0.6-macos-x64.update.json`]);
+    assert.deepEqual(f.calls.map(call => call.url), [API, `${SERVER}/v0.0.6/ssh-log-viewer-0.0.6-macos-x64.update.json`]);
     assert.equal((await f.updater.download()).status, 'error');
     assert.equal(f.calls.length, 2);
   }
@@ -268,11 +269,11 @@ test('metadata must bind exact version, platform, architecture, installer name, 
 test('metadata and installer URL validation rejects external hosts, wrong repos, tags and encoded path separators', async t => {
   for (const url of [
     'https://untrusted.invalid/setup.deb',
-    `${GITHUB}/download/v0.0.5/ssh-log-viewer-0.0.6-linux.deb`,
+    `${SERVER}/v0.0.5/ssh-log-viewer-0.0.6-linux.deb`,
     'https://github.com/other/ssh-log-viewer/releases/download/v0.0.6/ssh-log-viewer-0.0.6-linux.deb',
-    `${GITHUB}/download/v0.0.6%2fssh-log-viewer-0.0.6-linux.deb`,
-    `${GITHUB}/download/v0.0.6/ssh-log-viewer-0.0.6-linux.deb?other=1`,
-    `${GITHUB}/download/v0.0.6/ssh-log-viewer-0.0.6-linux.deb#fragment`,
+    `${SERVER}/v0.0.6%2fssh-log-viewer-0.0.6-linux.deb`,
+    `${SERVER}/v0.0.6/ssh-log-viewer-0.0.6-linux.deb?other=1`,
+    `${SERVER}/v0.0.6/ssh-log-viewer-0.0.6-linux.deb#fragment`,
     'http://github.com/huerli/ssh-log-viewer/releases/download/v0.0.6/ssh-log-viewer-0.0.6-linux.deb',
   ]) {
     const f = await fixture(t);
@@ -451,10 +452,11 @@ test('install launches only private verified path, returns shell errors for retr
 test('manual redirects validate destinations before fetching and do not trust Electron Response.url', async t => {
   const f = await fixture(t);
   const metadataUrl = f.release.assets[0].browser_download_url;
-  const cdn = 'https://release-assets.githubusercontent.com/github-production-release-asset/fixture?signature=test';
+  const cdn = metadataUrl;
+  let redirected = false;
   f.handler = (url, init) => {
     assert.equal(init.redirect, 'manual');
-    if (url === metadataUrl) return new Response(null, { status: 302, headers: { location: cdn } });
+    if (url === metadataUrl && !redirected) { redirected = true; return new Response(null, { status: 302, headers: { location: cdn } }); }
     if (url === cdn) {
       const response = json(f.metadata);
       Object.defineProperty(response, 'url', { value: 'https://incorrect-electron-response.invalid/' });

@@ -3,7 +3,8 @@ const { constants } = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const RELEASE_API = 'https://api.github.com/repos/huerli/ssh-log-viewer/releases/latest';
+const UPDATE_BASE = 'https://64.81.112.231:9443/ssh-log-viewer';
+const RELEASE_API = `${UPDATE_BASE}/latest.json`;
 const RELEASES_PAGE = 'https://github.com/huerli/ssh-log-viewer/releases';
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024;
@@ -115,7 +116,7 @@ function createUpdater(options) {
   if (typeof fetchImpl !== 'function') throw new Error('缺少更新网络请求实现');
 
   // Only main-process test injection can add an origin. Production always uses
-  // the fixed repository and exact, version-bound GitHub release asset paths.
+  // the fixed HTTPS update server and exact, version-bound asset paths.
   const testOrigins = new Set(allowedTestOrigins.map(origin => {
     const url = new URL(origin);
     if (!['http:', 'https:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password) {
@@ -148,11 +149,11 @@ function createUpdater(options) {
     try { url = new URL(asset.browser_download_url); } catch { throw new Error('更新资源地址无效'); }
     if (url.username || url.password || url.hash || url.search) throw new Error('更新资源地址无效');
     if (testOrigins.has(url.origin)) return url.href;
-    const expected = ['', 'huerli', 'ssh-log-viewer', 'releases', 'download', tag, asset.name];
+    const expected = ['', 'ssh-log-viewer', 'releases', tag, asset.name];
     let segments;
     try { segments = url.pathname.split('/').map(segment => decodeURIComponent(segment)); }
     catch { throw new Error('更新资源地址无效'); }
-    if (url.origin !== 'https://github.com' || segments.length !== expected.length || segments.some((segment, index) => segment !== expected[index])) throw new Error('更新资源必须来自官方仓库的当前版本');
+    if (url.origin !== new URL(UPDATE_BASE).origin || segments.length !== expected.length || segments.some((segment, index) => segment !== expected[index])) throw new Error('更新资源必须来自官方仓库的当前版本');
     return url.href;
   }
 

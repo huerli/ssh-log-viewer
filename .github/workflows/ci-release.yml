@@ -190,6 +190,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: gh release upload "$TAG" release-assets/* --clobber
+      - name: Upload verified release to update server
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/create-server-release.cjs release-assets "$TAG"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/update_upload
+          chmod 600 ~/.ssh/update_upload
+          cat scripts/update-server-known-hosts >> ~/.ssh/known_hosts
+          trap 'rm -f ~/.ssh/update_upload' EXIT
+          remote="/srv/ssh-log-viewer/releases/$TAG"
+          ssh -i ~/.ssh/update_upload -o BatchMode=yes -o StrictHostKeyChecking=yes root@64.81.112.231 "mkdir -p '$remote'"
+          rsync -av --exclude latest.json -e 'ssh -i ~/.ssh/update_upload -o BatchMode=yes -o StrictHostKeyChecking=yes' release-assets/ "root@64.81.112.231:$remote/"
+          ssh -i ~/.ssh/update_upload -o BatchMode=yes -o StrictHostKeyChecking=yes root@64.81.112.231 "cd '$remote' && sha256sum -c -- *.sha256"
+          scp -i ~/.ssh/update_upload -o BatchMode=yes -o StrictHostKeyChecking=yes release-assets/latest.json "root@64.81.112.231:$remote/latest.json"
+          ssh -i ~/.ssh/update_upload -o BatchMode=yes -o StrictHostKeyChecking=yes root@64.81.112.231 "python3 - '$TAG'" < scripts/activate-server-release.py
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
