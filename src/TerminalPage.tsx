@@ -229,7 +229,9 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
   }, [font.family, font.size, displaySlot]);
   useEffect(() => {
     if (active) requestAnimationFrame(() => { fitRef.current?.fit(); });
-    else if (isSsh) { connectionVersion.current++; sshOpening.current = false; setBusy(false); connectedRef.current = false; setConnected(false); setStatus('已断开'); }
+    // Switching to the other terminal page only hides this view.  Keep the
+    // SSH session state intact so returning to the page reuses the existing
+    // shell instead of opening a second session (or showing it as closed).
   }, [active]);
   const send = async (text: string) => { if (!activeRef.current) return; if (!connectedRef.current) { setStatus(disconnectedMessage); return; } showOutputRef.current(); if (!isSsh && echoRef.current) terminal.current?.write(text.replace(/\r?\n/g, '\r\n')); try { await write(!isSsh && webModeRef.current ? text.replace(/[\r\n]+$/, '') + (text === '\x03' ? '' : '\n') : text); } catch (error) { setStatus(String(error)); } };
   async function openSshTerminal() {

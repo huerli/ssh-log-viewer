@@ -179,7 +179,10 @@ async function eventually(check, message, timeout = 10000) {
 
     await sidebar.getByRole('button', { name: '连接', exact: true }).click();
     await eventually(async () => await header.getByRole('button', { name: 'Telnet 输出', exact: true }).getAttribute('aria-pressed') === 'true', 'connecting from SSH must show Telnet output');
-    await eventually(() => first.closed, 'switch to Telnet must close SSH shell');
+    assert.equal(first.closed, false, 'switching to Telnet must preserve SSH shell');
+    await header.getByRole('button', { name: 'SSH 输出', exact: true }).click();
+    await eventually(async () => (await page.getByLabel('SSH 终端状态', { exact: true }).innerText()) === '已连接', 'returning to SSH must reuse the existing shell');
+    await header.getByRole('button', { name: 'Telnet 输出', exact: true }).click();
     assert.equal(ssh.count, 1, 'file connection must remain open');
     assert.ok((await page.evaluate(() => window.viewer.list('/system/log'))).entries.some(item => item.name === 'fixture.log'), 'SFTP must remain usable');
     assert.equal(await page.getByRole('button', { name: 'SSH 独立按钮', exact: true }).isVisible(), false);
