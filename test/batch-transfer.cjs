@@ -32,7 +32,7 @@ const { sourceIdentity } = require('../electron/source-names.cjs');
     const page = await app.firstWindow(); const errors = []; page.on('pageerror', e => errors.push(e.message));
     await page.getByLabel('主机', { exact: true }).fill('127.0.0.1'); await page.getByLabel('端口', { exact: true }).fill(String(server.port));
     await page.getByLabel('用户名', { exact: true }).fill('tester'); await page.getByLabel('密码', { exact: true }).fill('fixture-password');
-    await page.getByRole('button', { name: '连接', exact: true }).click(); await page.locator('.connection-pill.connected').waitFor();
+    await page.getByRole('button', { name: '连接', exact: true }).click(); await page.waitForFunction(() => { const b = [...document.querySelectorAll('.connection-actions button')].find(b => b.textContent === '断开'); return b && !b.disabled; });
     await page.locator('.file-list').getByText('signal.2026-10-12.01.log', { exact: true }).waitFor();
     await page.getByLabel('文件名匹配', { exact: true }).fill('signal.2026-10-12.*');
     await page.getByRole('button', { name: '全部下载', exact: true }).click();

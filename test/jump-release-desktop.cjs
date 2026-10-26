@@ -52,7 +52,7 @@ const listening = port => new Promise(resolve => {
     for (const [label, value] of [['跳板机名称', '测试跳板'], ['跳板机主机', '127.0.0.1'], ['跳板机端口', String(jump.port)], ['跳板机用户名', 'jumper'], ['跳板机密码', 'jump-password']]) await dialog.getByLabel(label, { exact: true }).fill(value);
     await dialog.getByRole('button', { name: '保存并使用', exact: true }).click();
     await page.locator('.connection-actions').getByRole('button', { name: '连接', exact: true }).click();
-    await page.locator('.connection-pill.connected').waitFor();
+    await page.waitForFunction(() => { const b = [...document.querySelectorAll('.connection-actions button')].find(b => b.textContent === '断开'); return b && !b.disabled; });
     await page.locator('.connection-actions').getByRole('button', { name: '断开', exact: true }).click();
     await started;
     assert.equal(await page.locator('.connection-actions').getByRole('button', { name: '断开中…', exact: true }).isDisabled(), true);
@@ -65,7 +65,7 @@ const listening = port => new Promise(resolve => {
     assert.equal(await listening(other.port), true);
     deny = false;
     await page.locator('.connection-actions').getByRole('button', { name: '连接', exact: true }).click();
-    await page.locator('.connection-pill.connected').waitFor();
+    await page.waitForFunction(() => { const b = [...document.querySelectorAll('.connection-actions button')].find(b => b.textContent === '断开'); return b && !b.disabled; });
     await page.locator('.connection-actions').getByRole('button', { name: '断开', exact: true }).click();
     await page.locator('.connection-pill.connected').waitFor({ state: 'hidden' });
     assert.equal(await listening(reverse.port), false);

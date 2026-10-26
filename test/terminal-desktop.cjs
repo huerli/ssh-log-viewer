@@ -99,7 +99,7 @@ async function eventually(check, message, timeout = 10000) {
     await page.getByRole('dialog', { name: 'Telnet 连接设置', exact: true }).waitFor();
     await page.getByRole('dialog', { name: 'Telnet 连接设置', exact: true }).getByRole('button', { name: '取消', exact: true }).click();
     await page.locator('.connection-actions').getByRole('button', { name: '连接', exact: true }).click();
-    await page.locator('.connection-pill.connected').waitFor();
+    await page.waitForFunction(() => { const b = [...document.querySelectorAll('.connection-actions button')].find(b => b.textContent === '断开'); return b && !b.disabled; });
     assert.equal(await page.getByRole('button', { name: '设备信息', exact: true }).isVisible(), false);
     await eventually(() => ssh.shells.length === 1 && !!ssh.shells[0].channel, 'SSH shell must open');
     const first = ssh.shells[0];
@@ -223,22 +223,23 @@ async function eventually(check, message, timeout = 10000) {
     [...sockets][0].write('background-telnet-marker 中文\r\n');
     await eventually(async () => (await fs.readFile(telnetLog, 'utf8')).includes('background-telnet-marker'), 'background Telnet output must still be recorded');
     assert.equal(await header.getByRole('button', { name: 'SSH 输出', exact: true }).getAttribute('aria-pressed'), 'true', 'background output must not change the visible page');
-    await eventually(() => ssh.shells.length === 2 && !!ssh.shells[1].channel, 'switching back must automatically reuse the authenticated SSH connection');
+    await eventually(() => ssh.shells.length === 1 && !!ssh.shells[0].channel, 'switching back must automatically reuse the authenticated SSH connection');
     assert.equal(await page.getByRole('button', { name: 'Telnet 独立按钮', exact: true }).isVisible(), false);
 
     const nextLog = await page.evaluate(() => window.viewer.sshTerminalRecording('all', true));
-    assert.notEqual(nextLog, sshLog, 'every shell must receive a unique log');
+    assert.equal(nextLog, sshLog, 'switching pages must preserve the same shell log');
     await page.evaluate(() => window.viewer.sshTerminalClose());
-    await eventually(() => ssh.shells[1].closed, 'explicit shell close');
+    await eventually(() => ssh.shells[0].closed, 'explicit shell close');
 
     // Delay server shell acceptance to exercise a real in-flight SSH callback after mode change.
     shellOptions.holdShell = true;
     await page.getByRole('button', { name: '重试终端', exact: true }).click();
-    await eventually(() => ssh.shells.length === 3, 'pending shell request must reach server');
+    await eventually(() => ssh.shells.length === 2, 'pending shell request must reach server');
     await mode('Telnet');
     shellOptions.holdShell = false;
     ssh.releaseShells();
-    await eventually(() => ssh.shells[2].closed, 'late shell callback must dispose cancelled shell');
+    await eventually(() => !!ssh.shells[1].channel, 'background shell opening must complete');
+    assert.equal(ssh.shells[1].closed, false, 'switching pages must preserve pending shell');
     assert.equal(ssh.count, 1);
     assert.equal(telnetSessions.length, 1, 'returning must reuse the original Telnet connection');
     assert.equal(telnetSessions[0].closed, false);
@@ -246,13 +247,13 @@ async function eventually(check, message, timeout = 10000) {
     await page.getByRole('button', { name: 'Telnet 独立按钮', exact: true }).click();
     await eventually(() => telnetSessions[0].input.endsWith('dev-custom\r\n'), 'Telnet must remain ready to send after returning');
     await mode('SSH');
-    await eventually(() => ssh.shells.length === 4 && !!ssh.shells[3].channel, 'SSH must reopen after cancelled attempt');
+    await eventually(() => ssh.shells.length === 2 && !!ssh.shells[1].channel, 'SSH must reuse background shell');
     await page.locator('.connection-actions').getByRole('button', { name: '断开', exact: true }).click();
-    await eventually(() => ssh.shells[3].closed && ssh.count === 0, 'upper disconnect must close SSH shell and file connection');
+    await eventually(() => ssh.shells[1].closed && ssh.count === 0, 'upper disconnect must close SSH shell and file connection');
     assert.equal(await page.locator('[data-protocol=ssh]').getByRole('button', { name: '发送', exact: true }).isDisabled(), true);
     await page.locator('.connection-actions').getByRole('button', { name: '连接', exact: true }).click();
-    await page.locator('.connection-pill.connected').waitFor();
-    await eventually(() => ssh.shells.length === 5 && !!ssh.shells[4].channel, 'upper reconnect must reopen SSH terminal automatically');
+    await page.waitForFunction(() => { const b = [...document.querySelectorAll('.connection-actions button')].find(b => b.textContent === '断开'); return b && !b.disabled; });
+    await eventually(() => ssh.shells.length === 3 && !!ssh.shells[2].channel, 'upper reconnect must reopen SSH terminal automatically');
     await mode('Telnet');
     assert.ok((await page.evaluate(() => window.viewer.list('/system/log'))).entries.some(item => item.name === 'fixture.log'));
     await header.getByRole('button', { name: '日志查看', exact: true }).click();
@@ -272,6 +273,7 @@ async function eventually(check, message, timeout = 10000) {
     await page.locator('.app').waitFor();
     assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('direct-telnet-nodes'))), directSaved);
     assert.equal(await page.getByLabel('Telnet 连接选择', { exact: true }).inputValue(), directSaved[0].id);
+    await page.locator('.header-actions').getByRole('button', { name: 'Telnet 输出', exact: true }).click();
     await page.getByRole('button', { name: 'Telnet 独立按钮', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'SSH 独立按钮', exact: true }).isVisible(), false);
     await page.locator('.header-actions').getByRole('button', { name: 'SSH 输出', exact: true }).click();

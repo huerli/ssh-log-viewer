@@ -655,3 +655,15 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .unified-terminal.show-log .telnet-commands,
 .unified-terminal.show-log .telnet-page > form:last-child,
 .unified-terminal.show-log .terminal-feedback { display: none; }
+
+.ssh-panel-title #ssh-status-slot{letter-spacing:0}
+.ssh-panel-title .telnet-connection-status{display:inline-flex;align-items:center;gap:5px;padding:3px 7px;border:1px solid var(--border);border-radius:12px;background:var(--control);color:var(--muted);font-size:11px;letter-spacing:0}
+.ssh-panel-title .telnet-connection-status.connected{color:var(--success);border-color:color-mix(in srgb,var(--success) 50%,var(--border));background:color-mix(in srgb,var(--success) 12%,var(--panel))}
+.ssh-panel-title .telnet-connection-status.connecting{color:var(--warning)}
+
+.ssh-panel-title,.telnet-sidebar .panel-title{font-size:13px;font-weight:600;line-height:1.5}
+.ssh-panel-title .telnet-connection-status,.telnet-sidebar .panel-title .telnet-connection-status{font-size:11px;font-weight:600;line-height:1.5;gap:5px;padding:3px 7px}
+
+/* Keep terminal portals mounted without reserving footer space in log mode. */
+.unified-terminal.show-log > .embedded-telnet{display:contents}
+.unified-terminal.show-log .embedded-telnet .telnet-page{display:contents}
