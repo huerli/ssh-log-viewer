@@ -1,11 +1,10 @@
-// Display changes leave Telnet connected; only a new attempt or explicit close cancels its pending work.
-function createTerminalMode({ closeSsh }) {
+// Display changes leave both terminal connections alive; only a new attempt or explicit close cancels pending work.
+function createTerminalMode() {
   let mode = 'telnet', generation = 0;
   return {
     select(next) {
       if (!['ssh', 'telnet'].includes(next)) throw new Error('终端模式无效');
       mode = next;
-      if (mode === 'telnet') closeSsh();
       return mode;
     },
     get mode() { return mode; },

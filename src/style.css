@@ -650,3 +650,8 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 
 .overwrite-upload{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;color:var(--muted)}
 .overwrite-upload input{margin:0}
+
+/* 日志查看时不占用空间显示终端按钮栏和命令发送栏。 */
+.unified-terminal.show-log .telnet-commands,
+.unified-terminal.show-log .telnet-page > form:last-child,
+.unified-terminal.show-log .terminal-feedback { display: none; }

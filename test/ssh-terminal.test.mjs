@@ -170,7 +170,7 @@ test('leaving Telnet preserves pending work and only explicit cancellation inval
   modes.select('telnet');
   const next = modes.token(); modes.cancel();
   assert.throws(() => modes.check(next), /已取消/);
-  assert.deepEqual(closed, ['ssh']);
+  assert.deepEqual(closed, []);
   assert.throws(() => modes.select('invalid'), /模式无效/);
 });
 

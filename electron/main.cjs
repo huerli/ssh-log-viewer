@@ -519,9 +519,7 @@ const sshTerminal = require('./ssh-terminal.cjs').createSshTerminal({
   emit: event,
   onLogFile: file => { extractedFiles.add(file); event({ type: 'local-files-changed' }); },
 });
-const terminalModes = require('./terminal-mode.cjs').createTerminalMode({
-  closeSsh: () => sshTerminal.close(),
-});
+const terminalModes = require('./terminal-mode.cjs').createTerminalMode();
 const webPasswordId = (address, username) => 'web-telnet-' + crypto.createHash('sha256').update(JSON.stringify([require('./web-telnet.cjs').normalizeWebAddress(address), username.trim()])).digest('hex');
 const handlers = {
   updateState: () => updateSnapshot(),
