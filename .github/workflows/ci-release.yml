@@ -199,10 +199,15 @@ jobs:
           set -euo pipefail
           node scripts/create-server-release.cjs release-assets "$TAG"
           install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/update_upload
-          chmod 600 ~/.ssh/update_upload
-          cat scripts/update-server-known-hosts >> ~/.ssh/known_hosts
           trap 'rm -f ~/.ssh/update_upload' EXIT
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/update_upload
+          chmod 600 ~/.ssh/update_upload
+          if ! ssh-keygen -y -P '' -f ~/.ssh/update_upload > ~/.ssh/update_upload.pub 2>/dev/null; then
+            echo '::error::DEPLOY_SSH_PRIVATE_KEY must contain the complete unencrypted OpenSSH private key, including BEGIN/END lines and real line breaks.'
+            exit 1
+          fi
+          ssh-keygen -lf ~/.ssh/update_upload.pub
+          cat scripts/update-server-known-hosts >> ~/.ssh/known_hosts
           remote="/srv/ssh-log-viewer/releases/$TAG"
           ssh -i ~/.ssh/update_upload -o BatchMode=yes -o StrictHostKeyChecking=yes root@64.81.112.231 "mkdir -p '$remote'"
           rsync -av --exclude latest.json -e 'ssh -i ~/.ssh/update_upload -o BatchMode=yes -o StrictHostKeyChecking=yes' release-assets/ "root@64.81.112.231:$remote/"
