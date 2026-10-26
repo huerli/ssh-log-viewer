@@ -178,6 +178,7 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const horizontalJump = useRef(-1);
+  const scrollLayout = useRef<{ id: string; token: number; ready: boolean; filter?: string; maxStart: number; range: number } | null>(null);
   const [scroll, setScroll] = useState(0);
   const [height, setHeight] = useState(600);
   const [rows, setRows] = useState<Row[]>([]);
@@ -194,8 +195,15 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
     return () => observer.disconnect();
   }, []);
   useLayoutEffect(() => {
-    const top = Math.min(maxStart, Math.max(0, jump.line)) / Math.max(1, maxStart) * (totalHeight - height);
-    if (viewport.current) viewport.current.scrollTop = top;
+    const view = viewport.current;
+    const previous = scrollLayout.current;
+    const range = Math.max(0, totalHeight - height);
+    const explicitJump = !previous || previous.id !== doc.id || previous.token !== jump.token || previous.ready !== doc.ready || previous.filter !== filter?.token;
+    // A resize (including horizontal scrollbar changes) must not replay the last jump.
+    const line = explicitJump ? jump.line : (view?.scrollTop || 0) / Math.max(1, previous.range) * previous.maxStart;
+    const top = Math.min(maxStart, Math.max(0, line)) / Math.max(1, maxStart) * range;
+    scrollLayout.current = { id: doc.id, token: jump.token, ready: doc.ready, filter: filter?.token, maxStart, range };
+    if (view) view.scrollTop = top;
     setScroll(top);
   }, [jump, doc.id, doc.ready, filter?.token, rowHeight, height]);
   useEffect(() => {
