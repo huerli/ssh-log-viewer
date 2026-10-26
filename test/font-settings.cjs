@@ -15,12 +15,22 @@ const assert = require('node:assert/strict');
     await app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }); }, file);
     let page = await app.firstWindow();
     const errors = []; page.on('pageerror', e => errors.push(e.message));
-    await page.getByRole('button', { name: '打开本地日志', exact: true }).first().click();
+    await page.getByRole('button', { name: '打开本地文件/文件夹', exact: true }).first().click();
+    await page.getByLabel('选择路径', { exact: true }).fill(file);
+    await page.getByRole('button', { name: '打开路径', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('600 行'));
     await page.getByRole('button', { name: '字体设置', exact: true }).click();
     await page.getByLabel('日志字体', { exact: true }).fill('DejaVu Sans Mono');
     await page.getByLabel('日志字号', { exact: true }).fill('24');
     assert.equal(await page.locator('.font-preview').evaluate(e => getComputedStyle(e).fontSize), '24px');
+    await page.evaluate(() => document.fonts.ready);
+    assert.ok(await page.locator('.font-preview').evaluate(element => {
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      context.font = `24px ${getComputedStyle(element).fontFamily}`;
+      // Multi-stroke numerals need enough space to stay legible beside ASCII.
+      return context.measureText('Ⅲ').width > context.measureText('I').width;
+    }));
     await page.getByRole('button', { name: '取消', exact: true }).click();
     assert.equal(await page.locator('.log-viewport').evaluate(e => getComputedStyle(e).fontSize), '12px');
     await page.getByRole('button', { name: '字体设置', exact: true }).click();

@@ -9,4 +9,6 @@ export function validateLogFont(value) {
 
 export const logLineHeight = size => Math.max(25, Math.ceil(size * 1.8));
 export const resultLineHeight = size => Math.max(28, Math.ceil(size * 1.8));
-export const logFontFamily = family => `${JSON.stringify(family)}, "DejaVu Sans Mono", "Noto Sans CJK SC", monospace`;
+// Use CJK numeral glyphs for Unicode Roman numerals: Western monospace
+// fonts can squeeze multi-stroke numerals such as Ⅲ and Ⅷ into one narrow cell.
+export const logFontFamily = family => `"Log Roman Numerals", ${JSON.stringify(family)}, "DejaVu Sans Mono", "Noto Sans CJK SC", monospace`;

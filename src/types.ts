@@ -21,6 +21,8 @@ declare global {
   const __APP_VERSION__: string;
   interface Window {
     viewer: {
+      exportJsonConfig(filename: string, content: string): Promise<{ path: string } | null>;
+      getPathForFile(file: File): string;
       updateState(): Promise<UpdateState>;
       checkForUpdates(): Promise<UpdateState>;
       downloadUpdate(): Promise<UpdateState>;

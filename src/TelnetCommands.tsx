@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { parseCommandGroups, commandVariables, renderCommand, randomCommandColor } from '../shared/telnet-commands.mjs';
 type Command = { id: string; name: string; text: string; color?: string };
@@ -107,13 +107,16 @@ export function TelnetCommands({ onSend, settingsSlot, protocol = 'telnet', visi
     window.addEventListener('keydown', dismiss);
     return () => window.removeEventListener('keydown', dismiss);
   }, [menu]);
-  function exportGroups(selected: Group[]) {
-    const blob = new Blob([JSON.stringify({ format: 'ssh-log-viewer-' + protocol + '-commands', version: 1, groups: selected }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url; link.download = protocol + '-commands-' + new Date().toISOString().slice(0, 10) + '.json';
-    link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
-    setTransferMessage('已导出 ' + selected.length + ' 个分组');
+  const [exporting, setExporting] = useState(false);
+  const exportLock = useRef(false);
+  async function exportGroups(selected: Group[]) {
+    if (exportLock.current) return;
+    exportLock.current = true; setExporting(true); setTransferMessage('请选择配置保存位置…');
+    try {
+      const saved = await window.viewer.exportJsonConfig(protocol + '-commands-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify({ format: 'ssh-log-viewer-' + protocol + '-commands', version: 1, groups: selected }, null, 2));
+      setTransferMessage(saved ? '已导出 ' + selected.length + ' 个分组' : '已取消导出');
+    } catch (error) { setTransferMessage('导出失败：' + String(error)); }
+    finally { exportLock.current = false; setExporting(false); }
   }
   async function importGroups(file: File) {
     try {
@@ -178,18 +181,18 @@ export function TelnetCommands({ onSend, settingsSlot, protocol = 'telnet', visi
             <button className="primary" disabled={!(groupDrafts[item.id] || '').trim() || groupDrafts[item.id].trim() === item.name} onClick={() => save(groups.map(value => value.id === item.id ? { ...value, name: groupDrafts[item.id].trim() } : value))}>保存名称</button>
             <button aria-label={'上移分组' + item.name} title="上移分组" disabled={index === 0} onClick={() => moveGroup(item.id, -1)}>↑</button>
             <button aria-label={'下移分组' + item.name} title="下移分组" disabled={index === groups.length - 1} onClick={() => moveGroup(item.id, 1)}>↓</button>
-            <button aria-label={'导出分组' + item.name} title="导出此分组的按钮配置（JSON）" onClick={() => exportGroups([item])}>导出</button>
+            <button disabled={exporting} aria-label={'导出分组' + item.name} title="导出此分组的按钮配置（JSON）" onClick={() => exportGroups([item])}>导出</button>
             <button aria-label={'删除分组' + item.name} title="删除分组及其中的按钮" onClick={() => { const next = groups.filter(value => value.id !== item.id); save(next); if (item.id === group?.id) setActive(next[0]?.id || ''); }}>删除</button>
           </div>)}{!groups.length && <p className="command-groups-empty">暂无分组，可在下方新增。</p>}</div>
           <div className="command-group-create"><label htmlFor={protocol + '-new-group-name'}>新增分组</label><form onSubmit={event => { event.preventDefault(); if (!groupName.trim()) return; const id = crypto.randomUUID(); save([...groups, { id, name: groupName.trim(), commands: [] }]); setGroupDrafts({ ...groupDrafts, [id]: groupName.trim() }); setActive(id); setGroupName(''); }}><input id={protocol + '-new-group-name'} aria-label="新分组名称" placeholder="输入新分组名称" value={groupName} onChange={event => setGroupName(event.target.value)} /><button className="primary" disabled={!groupName.trim()}>新增分组</button></form></div>
         </div>
-        <footer className="command-groups-footer"><p>用 ↑ ↓ 调整分组顺序，修改名称后点击“保存名称”。<br />点击“导出”可下载对应分组的按钮配置（JSON），也可以一键导出全部分组。<br />删除分组会同时删除其中的按钮。</p>{transferMessage && <p role="status">{transferMessage}</p>}<div className="command-groups-actions"><span>操作后自动保存</span><button type="button" disabled={!groups.length} onClick={() => exportGroups(groups)}>一键导出全部</button><button type="button" className="primary" onClick={() => setAdjustGroups(false)}>完成</button></div></footer>
+        <footer className="command-groups-footer"><p>用 ↑ ↓ 调整分组顺序，修改名称后点击“保存名称”。<br />点击“导出”可下载对应分组的按钮配置（JSON），也可以一键导出全部分组。<br />删除分组会同时删除其中的按钮。</p>{transferMessage && <p role="status">{transferMessage}</p>}<div className="command-groups-actions"><span>操作后自动保存</span><button type="button" disabled={exporting || !groups.length} onClick={() => exportGroups(groups)}>一键导出全部</button><button type="button" className="primary" onClick={() => setAdjustGroups(false)}>完成</button></div></footer>
       </section>
     </div>}
     {manage && <div className="settings-backdrop" style={{ zIndex: 120 }} onClick={() => setManage(false)}><section className="directory-settings command-config-dialog" role="dialog" aria-label="按钮栏配置" onClick={e => e.stopPropagation()}><div className="panel-title"><strong>按钮栏配置 · {group?.name || '新建按钮组'}</strong><button aria-label="关闭按钮栏配置" onClick={() => setManage(false)}>×</button></div><div className="command-config-list">{group?.commands.map(c => <div className="command-config-item" key={c.id}><div className="inline"><strong className="command-color-preview" style={buttonStyle(c.color)}>{commandVariables(c.text).length > 0 && <span className="variable-command-badge"><b>{'{ }'}</b>参数</span>}{c.name}</strong><code style={{ flex: 1 }}>{c.text}</code><button onClick={() => { setEditing(c.id); setName(c.name); setText(c.text); setColor(c.color || ''); }}>编辑</button><button onClick={() => { save(groups.map(g => g.id === group.id ? { ...g, commands: g.commands.filter(item => item.id !== c.id) } : g)); reset(); }}>删除</button></div></div>)}</div>
       <form className="inline" onSubmit={e => { e.preventDefault(); if (!groupName.trim()) return; const id = crypto.randomUUID(); save([...groups, { id, name: groupName.trim(), commands: [] }]); setActive(id); setGroupName(''); reset(); }}><input aria-label="分组名称" placeholder="分组名称" value={groupName} onChange={e => setGroupName(e.target.value)} /><button className="primary">新增分组</button>{group && <><button type="button" className="primary" disabled={!groupName.trim()} onClick={() => { save(groups.map(g => g.id === group.id ? { ...g, name: groupName.trim() } : g)); setGroupName(''); }}>重命名当前分组</button><button type="button" onClick={() => { save(groups.filter(g => g.id !== group.id)); setActive(''); reset(); }}>删除当前分组</button></>}</form>
       {group && <div className="command-inline-editor"><strong>{editing ? '编辑命令按钮' : '新增命令按钮'}</strong>{commandForm}<small>可变命令使用 {'{{变量名}}'}，例如 {'find / -name "{{map文件名}}"'}。点击按钮时填写变量。</small></div>}
-      <div className="inline"><button type="button" onClick={() => importInput.current?.click()}>导入分组与命令…</button><button type="button" disabled={!group} onClick={() => group && exportGroups([group])}>导出当前分组</button><button type="button" disabled={!groups.length} onClick={() => exportGroups(groups)}>导出全部分组</button></div>
+      <div className="inline"><button type="button" onClick={() => importInput.current?.click()}>导入分组与命令…</button><button type="button" disabled={exporting || !group} onClick={() => group && exportGroups([group])}>导出当前分组</button><button type="button" disabled={exporting || !groups.length} onClick={() => exportGroups(groups)}>导出全部分组</button></div>
       <small>JSON 文件包含分组及命令按钮；导入时追加分组，不覆盖已有配置。</small>
       {transferMessage && <p role="status">{transferMessage}</p>}
     </section></div>}

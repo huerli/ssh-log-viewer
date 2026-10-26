@@ -5,6 +5,7 @@ export const themes = [
   { id: 'violet', name: '暮光紫' },
   { id: 'graphite', name: '石墨灰' },
   { id: 'amber', name: '暖砂金' },
+  { id: 'terracotta', name: '陶土橙' },
 ] as const;
 
 export type ThemeId = typeof themes[number]['id'];

@@ -222,15 +222,16 @@ async function openFile(remotePath, localPath) {
   if (!gzip) doc.prefix = await prefixHash(doc);
   let preview = [];
   if (!gzip && attrs.size) {
-    const start = Math.max(0, attrs.size - 256 * 1024);
-    const input = remote ? remoteSource(sftp, source, start, attrs.size, doc.controller.signal) : fs.createReadStream(source, { start, end: attrs.size - 1 });
+    const start = 0;
+    const previewEnd = Math.min(attrs.size, 256 * 1024);
+    const input = remote ? remoteSource(sftp, source, start, previewEnd, doc.controller.signal) : fs.createReadStream(source, { start, end: previewEnd - 1 });
     const chunks = [];
     for await (const chunk of input) chunks.push(chunk);
     let buffer = Buffer.concat(chunks);
-    if (start) { const newline = buffer.indexOf(10); buffer = newline === -1 ? Buffer.alloc(0) : buffer.subarray(newline + 1); }
+    if (previewEnd < attrs.size) { const newline = buffer.lastIndexOf(10); buffer = newline === -1 ? Buffer.alloc(0) : buffer.subarray(0, newline + 1); }
     preview = buffer.toString('utf8').split('\n');
     if (preview.at(-1) === '') preview.pop();
-    preview = preview.slice(-2000).map(text => text.replace(/\r$/, ''));
+    preview = preview.slice(0, 2000).map(text => text.replace(/\r$/, ''));
   }
   setImmediate(() => { doc.work = (async () => {
     try {
@@ -735,6 +736,17 @@ const handlers = {
     const result = await shell.openPath(resolved);
     if (result) throw new Error(result);
   },
+  exportJsonConfig: async (filename, content) => {
+    if (typeof filename !== 'string' || !/^[a-zA-Z0-9_-]+\.json$/.test(filename) || typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > 5 * 1024 * 1024) throw new Error('导出配置无效或超过 5MB');
+    JSON.parse(content);
+    const chosen = await dialog.showSaveDialog(win, {
+      title: '导出配置', defaultPath: path.join(app.getPath('downloads'), filename),
+      filters: [{ name: 'JSON 配置', extensions: ['json'] }],
+    });
+    if (chosen.canceled || !chosen.filePath) return null;
+    await fsp.writeFile(chosen.filePath, content, 'utf8');
+    return { path: chosen.filePath };
+  },
   exportSearchResults: async data => {
     const chosen = await dialog.showSaveDialog(win, {
       title: '导出搜索结果', defaultPath: path.join(app.getPath('downloads'), '搜索结果.txt'),
@@ -758,7 +770,7 @@ const handlers = {
     return config.searchHistory;
   },
   saveTheme: async theme => {
-    if (!['midnight', 'light', 'forest', 'violet', 'graphite', 'amber'].includes(theme)) throw new Error('未知颜色主题');
+    if (!['midnight', 'light', 'forest', 'violet', 'graphite', 'amber', 'terracotta'].includes(theme)) throw new Error('未知颜色主题');
     config.theme = theme;
     await save();
     return theme;

@@ -1,3 +1,9 @@
+@font-face{
+  font-family:"Log Roman Numerals";
+  src:local("Noto Sans Mono CJK SC"),local("Noto Sans CJK SC"),local("Microsoft YaHei"),local("PingFang SC"),local("DejaVu Sans");
+  unicode-range:U+2160-217F;
+  font-display:swap;
+}
 :root{font-family:Inter,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;color:var(--text);background:var(--canvas);font-size:13px;color-scheme:dark;
   --text:#dce5f2; --muted:#91a3bd; --canvas:#101721; --header:#141f30;
   --panel:#162131; --log:#0f1724; --input:#111c2b; --control:#202d40;
@@ -47,6 +53,15 @@
   --accent:#9d5d17; --accent-hover:#804810; --accent-text:#885117;
   --success:#33724c; --warning:#8b5817; --danger:#ab3037; --danger-bg:#ffe4de;
   --scrollbar:#c4a984;
+}
+:root[data-theme="terracotta"]{
+  color-scheme:light;
+  --text:#4b3426; --muted:#806b58; --canvas:#f7f0e6; --header:#fffaf3;
+  --panel:#fbf4e9; --log:#fffdf9; --input:#fffefa; --control:#f2e6d7;
+  --hover:#ecd8c2; --selected:#f3dec0; --tint:#f7e8d5; --border:#dcc2a5;
+  --accent:#c9783d; --accent-hover:#b7642e; --accent-text:#b76635;
+  --success:#397650; --warning:#9a631c; --danger:#b33d42; --danger-bg:#ffe4df;
+  --scrollbar:#c6a584;
 }
 .theme-picker{display:flex;align-items:center;gap:7px;min-width:130px}
 .theme-picker select{width:110px;padding:7px 9px;cursor:pointer}
@@ -624,3 +639,7 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .command-buttons button[draggable=true]:active{cursor:grabbing}
 .command-buttons button[data-drop-position=before]{box-shadow:inset 4px 0 var(--accent-text)}
 .command-buttons button[data-drop-position=after]{box-shadow:inset -4px 0 var(--accent-text)}
+
+.log-drop-zone{position:relative;display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.log-drop-zone.dragging{outline:2px dashed var(--accent-text);outline-offset:-4px}
+.log-drop-hint{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:var(--panel);opacity:.95;color:var(--accent-text);font-size:20px;pointer-events:none}

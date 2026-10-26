@@ -165,29 +165,11 @@ const os = require('node:os');
     await newGroup.getByRole('button', { name: '确认', exact: true }).click();
     await newGroup.waitFor({ state: 'hidden' });
     let manager = await groupManager();
-    await page.evaluate(() => {
-      window.__commandExport = null;
-      const createObjectURL = URL.createObjectURL.bind(URL);
-      const originalClick = HTMLAnchorElement.prototype.click;
-      URL.createObjectURL = blob => {
-        const url = createObjectURL(blob);
-        window.__commandExport = { url, blob };
-        return url;
-      };
-      HTMLAnchorElement.prototype.click = function () {
-        if (this.download) window.__commandExport = { ...window.__commandExport, filename: this.download };
-        return originalClick.call(this);
-      };
-    });
+    const exportPath = path.join(temp, 'commands.json');
+    await app.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }); }, exportPath);
     await manager.getByRole('button', { name: '一键导出全部', exact: true }).click();
-    const exported = await page.evaluate(async () => {
-      const exportState = window.__commandExport;
-      if (!exportState?.url || !exportState.blob) throw new Error('export did not create a Blob URL');
-      const text = await exportState.blob.text();
-      URL.revokeObjectURL(exportState.url);
-      return { filename: exportState.filename, payload: JSON.parse(text) };
-    });
-    assert.match(exported.filename, /^telnet-commands-\d{4}-\d{2}-\d{2}\.json$/);
+    await manager.getByRole('status').filter({ hasText: '已导出 3 个分组' }).waitFor();
+    const exported = { payload: JSON.parse(await fs.readFile(exportPath, 'utf8')) };
     const payload = exported.payload;
     assert.equal(payload.format, 'ssh-log-viewer-telnet-commands');
     assert.equal(payload.version, 1);
