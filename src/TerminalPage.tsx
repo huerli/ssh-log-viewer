@@ -1,3 +1,4 @@
+import { useSession, useViewer, slotId, type TerminalSeed } from './session-context';
 import type { LogFont } from './types';
 import { logFontFamily } from '../shared/log-font.mjs';
 import { createPortal } from 'react-dom';
@@ -15,32 +16,37 @@ function readDirectNodes(): DirectNode[] {
 function readWebNodes(): WebNode[] {
   try { const saved = JSON.parse(localStorage.getItem('web-telnet-nodes') || '[]'); return Array.isArray(saved) ? saved.filter(node => node && typeof node.id === 'string' && typeof node.name === 'string' && typeof node.address === 'string' && node.address.trim() && typeof node.username === 'string' && node.username.trim()) : []; } catch { return []; }
 }
-export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpen, sshConnection = '', sshConnecting = false, outputVisible }: { protocol: 'ssh' | 'telnet'; active: boolean; settingsOpen: boolean; onShowOutput(): void | Promise<void>; font: LogFont; sshConnection?: string; sshConnecting?: boolean; outputVisible: boolean }) {
+export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpen, sshConnection = '', sshConnecting = false, outputVisible, seed }: { seed?: TerminalSeed; protocol: 'ssh' | 'telnet'; active: boolean; settingsOpen: boolean; onShowOutput(): void | Promise<void>; font: LogFont; sshConnection?: string; sshConnecting?: boolean; outputVisible: boolean }) {
+  const api = useViewer();
+  const session = useSession();
+  const connectButton = useRef<HTMLButtonElement>(null);
+  const autoStarted = useRef(false);
   const isSsh = protocol === 'ssh';
   const label = isSsh ? 'SSH' : 'Telnet';
   const activeRef = useRef(active);
   activeRef.current = active;
   const outputVisibleRef = useRef(outputVisible);
   outputVisibleRef.current = outputVisible;
-  const recording = isSsh ? window.viewer.sshTerminalRecording : window.viewer.telnetRecording;
-  const write = isSsh ? window.viewer.sshTerminalWrite : window.viewer.telnetWrite;
+  const recording = isSsh ? api.sshTerminalRecording : api.telnetRecording;
+  const write = isSsh ? api.sshTerminalWrite : api.telnetWrite;
   const disconnectedMessage = isSsh ? 'SSH 终端未连接，请使用上方连接管理连接 SSH' : '设备未连接，请先点击连接；Web 登录成功不代表设备终端已连接';
   const [displaySlot, setDisplaySlot] = useState<HTMLElement | null>(null);
   const [settingsSlot, setSettingsSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => { setSettingsSlot(settingsOpen ? document.getElementById(protocol + '-settings-slot') : null); }, [settingsOpen]);
+  useEffect(() => { setSettingsSlot(settingsOpen ? document.getElementById(slotId(session.id, protocol + '-settings-slot')) : null); }, [settingsOpen]);
   const [sshStatusSlot, setSshStatusSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => { if (isSsh) { setSshStatusSlot(document.getElementById('ssh-status-slot')); } }, []);
+  useEffect(() => { if (isSsh) { setSshStatusSlot(document.getElementById(slotId(session.id, 'ssh-status-slot'))); } }, []);
   const [connectionSlot, setConnectionSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => { setConnectionSlot(document.getElementById('telnet-connection-slot')); setDisplaySlot(document.getElementById(protocol + '-display-slot')); }, []);
+  useEffect(() => { setConnectionSlot(document.getElementById(slotId(session.id, 'telnet-connection-slot'))); setDisplaySlot(document.getElementById(slotId(session.id, protocol + '-display-slot'))); }, []);
+  useEffect(() => { if (seed && connectionSlot && !autoStarted.current) { autoStarted.current = true; connectButton.current?.click(); } }, [connectionSlot]);
   const showOutputRef = useRef(onShowOutput);
   showOutputRef.current = onShowOutput;
-  const [webMode, setWebMode] = useState(false);
+  const [webMode, setWebMode] = useState(seed?.webMode || false);
   const webModeRef = useRef(webMode);
   webModeRef.current = webMode;
   const webLineRef = useRef('');
   const [webNodes, setWebNodes] = useState<WebNode[]>(readWebNodes);
   const [webNodeId, setWebNodeId] = useState('');
-  const [webNodeName, setWebNodeName] = useState('');
+  const [webNodeName, setWebNodeName] = useState(seed?.name || '');
   const [connectionSettings, setConnectionSettings] = useState(false);
   function saveWebNodes(nodes: typeof webNodes) { localStorage.setItem('web-telnet-nodes', JSON.stringify(nodes)); setWebNodes(nodes); }
   function selectWebNode(id: string) {
@@ -50,18 +56,18 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     setWebAddress(node?.address || ''); setWebUser(node?.username || '');
     setWebPassword(''); setRememberPassword(node?.rememberPassword ?? true); setTelnetToken(''); setWebLoginStatus('');
   }
-  const [webAddress, setWebAddress] = useState('');
-  const [webUser, setWebUser] = useState('');
+  const [webAddress, setWebAddress] = useState(seed?.webAddress || '');
+  const [webUser, setWebUser] = useState(seed?.webUser || '');
   const [rememberPassword, setRememberPassword] = useState(true);
-  const [webPassword, setWebPassword] = useState('');
+  const [webPassword, setWebPassword] = useState(seed?.webPassword || '');
   const [deviceQuery, setDeviceQuery] = useState('');
   const [deviceSearchError, setDeviceSearchError] = useState('');
   const deviceSearchVersion = useRef(0);
   const [deviceMatches, setDeviceMatches] = useState<{ number: string; name: string; online: boolean }[]>([]);
   const [deviceSearching, setDeviceSearching] = useState(false);
   const [deviceSearchOpen, setDeviceSearchOpen] = useState(false);
-  const [device, setDevice] = useState('');
-  const [deviceName, setDeviceName] = useState('');
+  const [device, setDevice] = useState(seed?.device || '');
+  const [deviceName, setDeviceName] = useState(seed?.deviceName || '');
   useEffect(() => {
     const version = ++deviceSearchVersion.current;
     setDeviceMatches([]); setDeviceSearchError(''); setDeviceSearchOpen(false); setDeviceSearching(false);
@@ -70,10 +76,10 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     const timer = setTimeout(async () => {
       setDeviceSearching(true); setDeviceSearchOpen(true);
       try {
-        await window.viewer.webTelnetLogin(webAddress, webUser, webPassword);
+        await api.webTelnetLogin(webAddress, webUser, webPassword);
         if (!pending || deviceSearchVersion.current !== version) return;
         setWebPassword('');
-        const matches = await window.viewer.webTelnetSearchDevices(webAddress, deviceQuery);
+        const matches = await api.webTelnetSearchDevices(webAddress, deviceQuery);
         if (pending && deviceSearchVersion.current === version) setDeviceMatches(matches);
       } catch (error) {
         if (pending && deviceSearchVersion.current === version) setDeviceSearchError(String(error));
@@ -83,13 +89,13 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     }, 350);
     return () => { pending = false; clearTimeout(timer); };
   }, [deviceQuery, webAddress, webUser, webMode, isSsh]);
-  const [telnetToken, setTelnetToken] = useState('');
+  const [telnetToken, setTelnetToken] = useState(seed?.token || '');
   const [webLoginStatus, setWebLoginStatus] = useState('');
   const [directNodes, setDirectNodes] = useState<DirectNode[]>(readDirectNodes);
   const [directNodeId, setDirectNodeId] = useState(directNodes[0]?.id || '');
-  const [directNodeName, setDirectNodeName] = useState(directNodes[0]?.name || '');
-  const [host, setHost] = useState(directNodes[0]?.host || '192.168.20.7');
-  const [port, setPort] = useState(directNodes[0]?.port || 23);
+  const [directNodeName, setDirectNodeName] = useState(seed?.name || directNodes[0]?.name || '');
+  const [host, setHost] = useState(seed?.host || directNodes[0]?.host || '192.168.20.7');
+  const [port, setPort] = useState(seed?.port || directNodes[0]?.port || 23);
   function saveDirectNodes(nodes: typeof directNodes) {
     localStorage.setItem('direct-telnet-nodes', JSON.stringify(nodes)); setDirectNodes(nodes);
   }
@@ -122,7 +128,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
   const [echo, setEcho] = useState(!isSsh);
   const echoRef = useRef(!isSsh);
   const [logMode, setLogMode] = useState('printable');
-  useEffect(() => { void window.viewer.settings().then(s => setLogMode((isSsh ? s.sshLogMode : s.telnetLogMode) || 'printable')).catch(() => {}); }, []);
+  useEffect(() => { void api.settings().then(s => setLogMode((isSsh ? s.sshLogMode : s.telnetLogMode) || 'printable')).catch(() => {}); }, []);
   const [append, setAppend] = useState(true);
   const [logFile, setLogFile] = useState('');
   const [logApplied, setLogApplied] = useState('');
@@ -153,7 +159,8 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
   const terminal = useRef<Terminal | null>(null);
   useEffect(() => {
     if (!displaySlot || !viewport.current) return;
-    const term = new Terminal({ allowProposedApi: true, convertEol: true, cursorBlink: true, fontSize: fontRef.current.size, fontFamily: logFontFamily(fontRef.current.family), scrollback: 10000, theme: { background: '#111827', foreground: '#e5e7eb' } });
+    const colors = getComputedStyle(document.documentElement);
+    const term = new Terminal({ allowProposedApi: true, convertEol: true, cursorBlink: true, fontSize: fontRef.current.size, fontFamily: logFontFamily(fontRef.current.family), scrollback: 10000, theme: { background: colors.getPropertyValue('--log').trim(), foreground: colors.getPropertyValue('--text').trim() } });
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
@@ -183,14 +190,14 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
       if (webModeRef.current) {
         if (text === '\x03') {
           webLineRef.current = ''; term.write('^C\r\n');
-          void window.viewer.telnetWrite(text).catch(error => setStatus(String(error)));
+          void api.telnetWrite(text).catch(error => setStatus(String(error)));
           return;
         }
         for (const char of text.replace(/\r\n/g, '\r')) {
           if (char === '\r' || char === '\n') {
             const command = webLineRef.current; webLineRef.current = '';
             term.write('\r\n');
-            if (command.trim()) void window.viewer.telnetWrite(command + '\n').catch(error => setStatus(String(error)));
+            if (command.trim()) void api.telnetWrite(command + '\n').catch(error => setStatus(String(error)));
           } else if (char === '\x7f' || char === '\b') {
             if (webLineRef.current) { webLineRef.current = [...webLineRef.current].slice(0, -1).join(''); if (echoRef.current) term.write('\b \b'); }
           } else if (char >= ' ' && !text.startsWith('\x1b')) {
@@ -206,8 +213,8 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
         else if (text === '\x03') term.write('^C\r\n');
         else if (!text.startsWith('\x1b')) term.write(text);
       }
-      void window.viewer.telnetWrite(text).catch(error => setStatus(String(error))); });
-    const unsubscribe = window.viewer.onEvent(e => {
+      void api.telnetWrite(text).catch(error => setStatus(String(error))); });
+    const unsubscribe = api.onEvent(e => {
       if (e.type === (isSsh ? 'ssh-terminal-data' : 'telnet-data')) {
         const position = term.buffer.active.viewportY;
         term.write(e.message || '', () => { if (searchingRef.current) term.scrollToLine(position); });
@@ -215,7 +222,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
       if (isSsh && e.type === 'ssh-terminal-log-error') setLogApplied(e.message || e.error || '日志写入失败');
       if (e.type === (isSsh ? 'ssh-terminal-status' : 'telnet-status')) { connectedRef.current = e.message === '已连接'; setConnected(connectedRef.current); setStatus(e.message || ''); if (e.file) setLogFile(e.file); if (e.message === '已连接' && activeRef.current && outputVisibleRef.current) { requestAnimationFrame(() => { fit.fit(); term.focus(); }); } }
     });
-    const terminalResize = term.onResize(({ cols, rows }) => { if (isSsh && connectedRef.current) void window.viewer.sshTerminalResize(cols, rows).catch(error => setStatus(String(error))); });
+    const terminalResize = term.onResize(({ cols, rows }) => { if (isSsh && connectedRef.current) void api.sshTerminalResize(cols, rows).catch(error => setStatus(String(error))); });
     const resize = new ResizeObserver(() => { if (viewport.current?.clientWidth) fit.fit(); });
     resize.observe(viewport.current!);
     return () => { resize.disconnect(); terminalResize.dispose(); themeObserver.disconnect(); searchResult.dispose(); searchAddon.current = null; unsubscribe(); input.dispose(); term.dispose(); terminal.current = null; };
@@ -243,7 +250,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     setBusy(true); setStatus('连接中…');
     terminal.current?.reset(); searchAddon.current?.clearDecorations();
     setSearchText(''); setSearchMessage(''); searchingRef.current = false;
-    try { fitRef.current?.fit(); await window.viewer.sshTerminalOpen(terminal.current?.cols || 80, terminal.current?.rows || 24); }
+    try { fitRef.current?.fit(); await api.sshTerminalOpen(terminal.current?.cols || 80, terminal.current?.rows || 24); }
     catch (error) { if (connectionVersion.current === attempt) setStatus(String(error)); }
     finally { if (connectionVersion.current === attempt) { sshOpening.current = false; setBusy(false); } }
   }
@@ -258,7 +265,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
       searchInput.current?.focus(); searchInput.current?.select();
     }
   }}>
-    {connectionSlot && !isSsh && createPortal(<section className="telnet-sidebar"><div className="panel-title">Telnet <span className={`connection-status telnet-connection-status${connected ? ' connected' : busy ? ' connecting' : ''}`} role="status" aria-label="Telnet 连接状态">{status}</span></div><div className="inline telnet-controls"><select aria-label="Telnet 连接选择" value={webMode ? webNodeId || '__web__' : directNodeId || '__direct__'} onChange={e => { if (e.target.value === '__direct__' || directNodes.some(node => node.id === e.target.value)) { setWebMode(false); if (e.target.value !== '__direct__') selectDirectNode(e.target.value); } else { setWebMode(true); if (e.target.value !== '__web__') selectWebNode(e.target.value); } }}><option value="__direct__">直连 · {host}:{port}</option>{directNodes.map(node => <option key={node.id} value={node.id}>直连 · {node.name}</option>)}<option value="__web__">Web 远程设备…</option>{webNodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}</select>{webMode && <><label>设备/车号<input aria-label="设备号或车号" value={deviceQuery || device} onChange={e => { deviceSearchVersion.current++; setDevice(''); setDeviceName(''); setDeviceQuery(e.target.value); setDeviceMatches([]); setDeviceSearchOpen(false); }} placeholder="输入设备号或车号关键词" /></label>{deviceSearchOpen && <div className="device-search-results" role="listbox" aria-label="设备搜索结果">{deviceSearching ? <small>搜索中…</small> : deviceSearchError ? <small>{deviceSearchError}</small> : deviceMatches.length ? deviceMatches.map(item => <button role="option" aria-selected={device === item.number} key={item.number} title={`车号：${item.name || '未知'} · 设备号：${item.number}`} onClick={() => { deviceSearchVersion.current++; setDevice(item.number); setDeviceName(item.name); setDeviceQuery(''); setDeviceSearchOpen(false); setDeviceSearching(false); }}><i className={`device-status-dot ${item.online ? 'online' : 'offline'}`} aria-label={item.online ? '在线' : '离线'} />{`${item.name || '未知车号'} · ${item.number}`}</button>) : <small>没有匹配的设备</small>}</div>}</>}<div className="telnet-connection-actions"><button onClick={() => setConnectionSettings(true)}>⚙ 设置</button><button className="primary" disabled={busy} onClick={async () => { const attempt = ++connectionVersion.current; const current = () => connectionVersion.current === attempt; setBusy(true); await showOutputRef.current();
+    {connectionSlot && !isSsh && createPortal(<section className="telnet-sidebar"><div className="panel-title">Telnet <span className={`connection-status telnet-connection-status${connected ? ' connected' : busy ? ' connecting' : ''}`} role="status" aria-label="Telnet 连接状态">{status}</span></div><div className="inline telnet-controls"><select aria-label="Telnet 连接选择" value={webMode ? webNodeId || '__web__' : directNodeId || '__direct__'} onChange={e => { if (e.target.value === '__direct__' || directNodes.some(node => node.id === e.target.value)) { setWebMode(false); if (e.target.value !== '__direct__') selectDirectNode(e.target.value); } else { setWebMode(true); if (e.target.value !== '__web__') selectWebNode(e.target.value); } }}><option value="__direct__">直连 · {host}:{port}</option>{directNodes.map(node => <option key={node.id} value={node.id}>直连 · {node.name}</option>)}<option value="__web__">Web 远程设备…</option>{webNodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}</select>{webMode && <><label>设备/车号<input aria-label="设备号或车号" value={deviceQuery || device} onChange={e => { deviceSearchVersion.current++; setDevice(''); setDeviceName(''); setDeviceQuery(e.target.value); setDeviceMatches([]); setDeviceSearchOpen(false); }} placeholder="输入设备号或车号关键词" /></label>{deviceSearchOpen && <div className="device-search-results" role="listbox" aria-label="设备搜索结果">{deviceSearching ? <small>搜索中…</small> : deviceSearchError ? <small>{deviceSearchError}</small> : deviceMatches.length ? deviceMatches.map(item => <button role="option" aria-selected={device === item.number} key={item.number} title={`车号：${item.name || '未知'} · 设备号：${item.number}`} onClick={() => { deviceSearchVersion.current++; setDevice(item.number); setDeviceName(item.name); setDeviceQuery(''); setDeviceSearchOpen(false); setDeviceSearching(false); }}><i className={`device-status-dot ${item.online ? 'online' : 'offline'}`} aria-label={item.online ? '在线' : '离线'} />{`${item.name || '未知车号'} · ${item.number}`}</button>) : <small>没有匹配的设备</small>}</div>}</>}<div className="telnet-connection-actions"><button onClick={() => setConnectionSettings(true)}>⚙ 设置</button><button ref={connectButton} className="primary" disabled={busy} onClick={async () => { if (session.beforeConnect({ kind: 'telnet', terminal: { host, port, name: webMode ? webNodeName : directNodeName, webMode, webAddress, webUser, webPassword, rememberPassword, device, deviceName, token: telnetToken } })) return; session.title(`Telnet · ${webMode ? webNodeName || device : directNodeName || host}`); const attempt = ++connectionVersion.current; const current = () => connectionVersion.current === attempt; setBusy(true); await showOutputRef.current();
       terminal.current?.reset();
       searchAddon.current?.clearDecorations();
       setSearchText(''); setSearchMessage(''); searchingRef.current = false;
@@ -267,26 +274,26 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
         if (!webAddress.trim()) { setConnectionSettings(true); setStatus('请在设置中填写服务地址'); return; }
         if (!device.trim() || !telnetToken) {
           if (!webUser.trim()) { setConnectionSettings(true); setStatus('请在设置中填写用户名和密码'); return; }
-          if (webPassword) await window.viewer.webTelnetPassword(webAddress, webUser, webPassword, rememberPassword);
+          if (webPassword) await api.webTelnetPassword(webAddress, webUser, webPassword, rememberPassword);
           if (!current()) return;
-          await window.viewer.webTelnetLogin(webAddress, webUser, webPassword);
+          await api.webTelnetLogin(webAddress, webUser, webPassword);
           if (!current()) return;
           setWebPassword(''); setWebLoginStatus('登录成功');
         }
         if (!device.trim()) {
-          await window.viewer.telnetClose();
+          await api.telnetClose();
           setStatus(deviceQuery.trim() ? '请先从搜索结果中选择设备' : 'Web 已登录 · 未连接设备');
           return;
         }
         if (!current()) return;
-        await window.viewer.webTelnetConnect(webAddress, device.trim(), telnetToken, { name: webNodeName, deviceName });
-      } else await window.viewer.telnetConnect(host, port, directNodeName); } catch (error) { if (current()) setStatus(String(error)); } finally { setBusy(false); } }}>连接</button><button onClick={() => { connectionVersion.current++; void window.viewer.telnetClose(); connectedRef.current = false; setConnected(false); setStatus('已断开'); }}>断开</button><button onClick={() => terminal.current?.clear()}>清屏</button><label><input type="checkbox" checked={echo} onChange={e => { setEcho(e.target.checked); echoRef.current = e.target.checked; }} />本地回显</label></div></div></section>, connectionSlot)}
+        await api.webTelnetConnect(webAddress, device.trim(), telnetToken, { name: webNodeName, deviceName });
+      } else await api.telnetConnect(host, port, directNodeName); } catch (error) { if (current()) setStatus(String(error)); } finally { setBusy(false); } }}>连接</button><button onClick={() => { connectionVersion.current++; void api.telnetClose(); connectedRef.current = false; setConnected(false); setStatus('已断开'); }}>断开</button><button onClick={() => terminal.current?.clear()}>清屏</button><label><input type="checkbox" checked={echo} onChange={e => { setEcho(e.target.checked); echoRef.current = e.target.checked; }} />本地回显</label></div></div></section>, connectionSlot)}
     {!isSsh && connectionSettings && <div className="settings-backdrop" style={{ zIndex: 115 }} onClick={() => setConnectionSettings(false)}><form className="directory-settings telnet-connection-settings" role="dialog" aria-label="Telnet 连接设置" onClick={e => e.stopPropagation()} onSubmit={async e => {
       e.preventDefault();
       if (webMode) {
         const id = webNodeId || crypto.randomUUID();
         const node = { id, name: webNodeName.trim() || webAddress.trim(), address: webAddress.trim(), username: webUser.trim(), rememberPassword };
-        try { await window.viewer.webTelnetPassword(webAddress, webUser, webPassword, rememberPassword); } catch (error) { setStatus(String(error)); return; }
+        try { await api.webTelnetPassword(webAddress, webUser, webPassword, rememberPassword); } catch (error) { setStatus(String(error)); return; }
         saveWebNodes([...webNodes.filter(item => item.id !== id), node]); setWebNodeId(id); setWebNodeName(node.name);
       } else {
         if (!host.trim() || !Number.isInteger(port) || port < 1 || port > 65535) return;
@@ -308,7 +315,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
       </> : <><label>直连配置<select aria-label="直连配置" value={directNodeId} onChange={e => selectDirectNode(e.target.value)}><option value="">＋ 新建直连</option>{directNodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label><label>名称<input aria-label="直连名称" value={directNodeName} placeholder="选填，默认使用主机和端口" onChange={e => setDirectNodeName(e.target.value)} /></label><label>主机<input required value={host} onChange={e => setHost(e.target.value)} /></label><label>端口<input required type="number" min={1} max={65535} value={port} onChange={e => setPort(Number(e.target.value))} /></label></>}
       <div className="inline"><button className="primary">保存</button><button type="button" onClick={() => setConnectionSettings(false)}>取消</button>{!webMode && <button type="button" onClick={() => selectDirectNode('')}>新增直连</button>}{!webMode && directNodeId && <button type="button" onClick={() => { const next = directNodes.filter(node => node.id !== directNodeId); saveDirectNodes(next); selectDirectNode(next[0]?.id || ''); }}>删除直连</button>}{webMode && webNodeId && <button type="button" onClick={() => { saveWebNodes(webNodes.filter(node => node.id !== webNodeId)); selectWebNode(''); }}>删除节点</button>}</div>
     </form></div>}
-    {settingsSlot && createPortal(<><button onClick={() => setLogSettings(true)}>日志设置…</button><button onClick={async () => { try { const file = await (isSsh ? window.viewer.sshTerminalSaveOutput() : window.viewer.telnetSaveOutput()); if (file) setLogApplied('已保存：' + file); } catch (error) { setLogApplied(String(error)); } }}>保存输出…</button>{logApplied && <small role="status">{logApplied}</small>}</>, settingsSlot)}
+    {settingsSlot && createPortal(<><button onClick={() => setLogSettings(true)}>日志设置…</button><button onClick={async () => { try { const file = await (isSsh ? api.sshTerminalSaveOutput() : api.telnetSaveOutput()); if (file) setLogApplied('已保存：' + file); } catch (error) { setLogApplied(String(error)); } }}>保存输出…</button>{logApplied && <small role="status">{logApplied}</small>}</>, settingsSlot)}
     {logSettings && <div className="settings-backdrop" style={{ zIndex: 120 }} onClick={() => setLogSettings(false)}><section className="directory-settings" role="dialog" aria-label={label + " 日志设置"} onClick={e => e.stopPropagation()}><div className="panel-title">日志设置<button aria-label="关闭日志设置" onClick={() => setLogSettings(false)}>×</button></div><label>日志类型<select value={logMode} onChange={e => setLogMode(e.target.value)}><option value="none">不记录</option><option value="printable">记录可打印输出</option><option value="all">记录所有输出（含控制序列）</option></select></label><label>写入方式<select value={append ? 'append' : 'overwrite'} onChange={e => setAppend(e.target.value === 'append')}><option value="append">追加日志文件</option><option value="overwrite">覆盖日志文件</option></select></label><button className="primary" onClick={async () => { try { const file = await recording(logMode, append); setLogFile(file || ''); setLogApplied(logMode === 'none' ? '已停止记录' : file ? '已应用日志设置' : '已应用，下次连接时自动创建日志'); } catch (error) { setLogApplied(String(error)); } }}>应用</button>{logFile && <><span title={logFile}>记录中：{logFile}</span><button onClick={async () => { try { await recording('none', true); setLogMode('none'); setLogFile(''); setLogApplied('已停止记录'); } catch (error) { setLogApplied(String(error)); } }}>停止记录</button></>}{logApplied && <p role="status">{logApplied}</p>}<p className="hint">自动保存到下载目录 {protocol}/日期/{isSsh ? '连接名称与主机' : '车号、设备号或直连名称与地址'}/，每次连接新建日志；清屏不影响记录。覆盖仅清空当前会话日志。</p></section></div>}
     {isSsh && sshStatusSlot && createPortal(<span className={`connection-status telnet-connection-status${connected && sshConnection ? ' connected' : busy || sshConnecting ? ' connecting' : ''}`} role="status" aria-label="SSH 终端状态" title={sshConnection ? status : '未连接'}>{sshConnecting ? '连接中…' : sshConnection ? status : '未连接'}</span>, sshStatusSlot)}
     {displaySlot && createPortal(<div className="shared-telnet-content">{isSsh && sshConnection && !connected && !busy && <div className="inline ssh-terminal-toolbar"><button onClick={() => void openSshTerminal()}>重试终端</button></div>}<form className="inline telnet-search" onSubmit={e => { e.preventDefault(); find(); }}><input ref={searchInput} aria-label={"搜索 " + label + " 输出"} placeholder="搜索终端输出（Ctrl+F）" value={searchText} onChange={e => { setSearchText(e.target.value); searchingRef.current = false; setSearchMessage(''); searchAddon.current?.clearDecorations(); }} onKeyDown={e => { if (e.key === 'Escape') { searchingRef.current = false; searchAddon.current?.clearDecorations(); terminal.current?.focus(); } if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); find(true); } }} /><label title="区分大小写"><input aria-label="区分大小写" type="checkbox" checked={caseSensitive} onChange={e => setCaseSensitive(e.target.checked)} />Aa</label><label><input type="checkbox" checked={regex} onChange={e => setRegex(e.target.checked)} />正则</label><button type="button" disabled={!searchText} onClick={() => find(true)}>上一个</button><button disabled={!searchText}>下一个</button><span aria-live="polite">{searchMessage}</span></form>

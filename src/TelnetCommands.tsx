@@ -52,6 +52,10 @@ export function TelnetCommands({ onSend, settingsSlot, protocol = 'telnet', visi
   const [text, setText] = useState('');
   const [color, setColor] = useState(() => randomCommandColor());
   const [groupName, setGroupName] = useState('');
+  const [addLogLevels, setAddLogLevels] = useState(false);
+  const [debugModule, setDebugModule] = useState('hmi');
+  const [logLevelCommands, setLogLevelCommands] = useState({ detail: 'debug hmi detail on', trace: 'debug hmi trace on', log: 'debug hmi log on' });
+  const logLevels = ['detail', 'trace', 'log'] as const;
   const [transferMessage, setTransferMessage] = useState('');
   const draggedCommand = React.useRef<{ groupId: string; commandId: string } | null>(null);
   const suppressCommandClickUntil = React.useRef(0);
@@ -130,7 +134,7 @@ export function TelnetCommands({ onSend, settingsSlot, protocol = 'telnet', visi
   return <div className="telnet-commands" style={visible ? undefined : { display: 'contents' }}>
     <div className="command-button-bar" style={visible ? undefined : { display: 'none' }} onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 165)) }); }}>
 
-      <select aria-label="按钮组" value={group?.id || ''} onChange={e => { if (e.target.value === '__add__') { setGroupName(''); setAddingGroup(true); } else { setActive(e.target.value); reset(); } }}><option value="" disabled>选择按钮组</option>{groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}<option value="__add__">＋ 新增分组…</option></select>
+      <select aria-label="按钮组" value={group?.id || ''} onChange={e => { if (e.target.value === '__add__') { setGroupName(''); setAddLogLevels(false); setDebugModule('hmi'); setLogLevelCommands({ detail: 'debug hmi detail on', trace: 'debug hmi trace on', log: 'debug hmi log on' }); setAddingGroup(true); } else { setActive(e.target.value); reset(); } }}><option value="" disabled>选择按钮组</option>{groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}<option value="__add__">＋ 新增分组…</option></select>
       <div className="command-buttons">
         {group?.commands.map(command => <button key={command.id} draggable
           data-drop-position={dropTarget?.id === command.id ? (dropTarget.after ? 'after' : 'before') : undefined}
@@ -206,9 +210,22 @@ export function TelnetCommands({ onSend, settingsSlot, protocol = 'telnet', visi
       {variableError && <p role="alert">{variableError}</p>}<div className="inline"><button type="button" onClick={() => setPendingCommand(null)}>取消</button><button className="primary">发送命令</button></div>
     </form></div>}
     {addingGroup && <div className="settings-backdrop" style={{ zIndex: 130 }} onClick={() => setAddingGroup(false)}>
-      <form className="directory-settings new-command-group-dialog" role="dialog" aria-label="新增按钮组" onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); if (!groupName.trim()) return; const id = crypto.randomUUID(); save([...groups, { id, name: groupName.trim(), commands: [] }]); setActive(id); setAddingGroup(false); setGroupName(''); reset(); }}>
+      <form className="directory-settings new-command-group-dialog" role="dialog" aria-label="新增按钮组" onClick={e => e.stopPropagation()} onSubmit={e => {
+        e.preventDefault();
+        if (!groupName.trim() || (addLogLevels && !debugModule.trim()) || (addLogLevels && logLevels.some(level => !logLevelCommands[level].trim()))) return;
+        const id = crypto.randomUUID();
+        const used: string[] = [];
+        const commands = addLogLevels ? logLevels.map(level => {
+          const color = randomCommandColor(used); used.push(color);
+          return { id: crypto.randomUUID(), name: level, text: logLevelCommands[level].trim(), color };
+        }) : [];
+        save([...groups, { id, name: groupName.trim(), commands }]);
+        setActive(id); setAddingGroup(false); setGroupName(''); reset();
+      }}>
         <header className="panel-title"><strong>新增分组</strong><button type="button" aria-label="关闭新增分组" onClick={() => setAddingGroup(false)}>×</button></header>
-        <label>分组名称<input autoFocus required aria-label="新分组名称" placeholder="例如：设备调试" value={groupName} onChange={e => setGroupName(e.target.value)} /></label>
+        <label>分组名称<input autoFocus required aria-label="新分组名称" placeholder="例如：debug" value={groupName} onChange={e => { setGroupName(e.target.value); if (/debug/i.test(e.target.value)) setAddLogLevels(true); }} /></label>
+        <label className="log-level-preset-toggle"><input type="checkbox" checked={addLogLevels} onChange={e => setAddLogLevels(e.target.checked)} />一并添加 detail / trace / log 日志等级按钮</label>
+        {addLogLevels && <div className="log-level-preset-fields"><label>Debug 模块<input required aria-label="Debug 模块" placeholder="例如：hmi" value={debugModule} onChange={e => { const module = e.target.value; setDebugModule(module); setLogLevelCommands({ detail: `debug ${module.trim()} detail on`, trace: `debug ${module.trim()} trace on`, log: `debug ${module.trim()} log on` }); }} /></label>{logLevels.map(level => <label key={level}>{level}<input required aria-label={level + ' 日志等级命令'} placeholder={'输入 ' + level + ' 等级对应的完整命令'} value={logLevelCommands[level]} onChange={e => setLogLevelCommands(previous => ({ ...previous, [level]: e.target.value }))} /></label>)}<p className="hint">填写设备实际支持的命令；支持使用 {'{{参数名}}'} 在点击按钮时输入参数。</p></div>}
         <p>创建后将自动切换到新分组。</p>
         <footer className="quick-command-actions"><button type="button" onClick={() => setAddingGroup(false)}>取消</button><button type="submit" className="primary" disabled={!groupName.trim()}>确认</button></footer>
       </form>

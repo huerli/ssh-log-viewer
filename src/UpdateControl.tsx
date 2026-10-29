@@ -1,3 +1,4 @@
+import { useSession, slotId } from './session-context';
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { UpdateState } from './types';
@@ -18,6 +19,7 @@ function summary(update: UpdateState) {
   }
 }
 export function UpdateControl({ settingsOpen }: { settingsOpen: boolean }) {
+  const session = useSession();
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
@@ -29,7 +31,7 @@ export function UpdateControl({ settingsOpen }: { settingsOpen: boolean }) {
     const unsubscribe = api.onEvent(event => { if (event.type === 'update-state' && event.update) setUpdate(event.update); });
     return () => { active = false; unsubscribe(); };
   }, []);
-  useEffect(() => { setSettingsSlot(settingsOpen ? document.getElementById('update-settings-slot') : null); }, [settingsOpen]);
+  useEffect(() => { setSettingsSlot(settingsOpen ? document.getElementById(slotId(session.id, 'update-settings-slot')) : null); }, [settingsOpen]);
   async function run(action: () => Promise<UpdateState | void>) {
     setError('');
     try { const value = await action(); if (value) setUpdate(value); }

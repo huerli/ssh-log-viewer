@@ -1,6 +1,6 @@
 {
   "name": "ssh-log-viewer",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "packageManager": "pnpm@11.25.0",
   "description": "SSH remote log viewer with disk-backed indexing",
   "private": true,
@@ -30,6 +30,7 @@
     "test:update": "node test/update-desktop.cjs",
     "test:commands": "node test/command-bar.cjs",
     "test:connection-transfer": "node test/connection-transfer.cjs",
+    "test:sessions": "node test/multi-session.cjs",
     "test:open-position": "node test/open-position.cjs",
     "test:upload": "node test/upload-desktop.cjs"
   },

@@ -1,5 +1,11 @@
 export type JumpProfile = { name?: string; enabled: boolean; host: string; port: number; username: string; auth: string; keyPath: string; password?: string; passphrase?: string; rememberPassword?: boolean; hasPassword?: boolean };
 export type Profile = { name: string; host: string; port: number; username: string; auth: string; keyPath: string; password?: string; passphrase?: string; rememberPassword?: boolean; hasPassword?: boolean; jump?: JumpProfile; jumpName?: string };
+/** Stable identifier for a workspace connection/log tab. Kept separate from
+ * document ids because a tab can replace its open document while retaining
+ * the same SSH/Telnet session. */
+export type SessionId = string;
+export type SessionKind = 'ssh' | 'telnet' | 'local';
+export type WorkspaceTab = { id: SessionId; kind: SessionKind; title: string; connectionName?: string; profileName?: string };
 export type Bookmark = { line: number; note: string; color: string };
 export type Doc = { id: string; name: string; origin?: string; archive?: string; remote: boolean; compressed: boolean; size: number; ready: boolean; lines: number; bookmarkKey: string; bookmarks: Bookmark[]; preview?: string[] };
 export type Row = { line: number; position?: number; text: string; truncated?: boolean; displayTruncated?: boolean };
@@ -16,11 +22,13 @@ export type UpdateState = {
   installerPath?: string; error?: string; checkedAt?: string; supported: boolean; isPackaged: boolean;
   platform: string; arch: string; autoCheck: boolean;
 };
-export type ViewerEvent = { update?: UpdateState; paths?: string[]; result?: SearchResult; type: string; id?: string; requestId?: string; bytes?: number; size?: number; count?: number; kind?: string; state?: string; error?: string; destination?: string; file?: string; fileIndex?: number; files?: number; completedFiles?: number; failedFiles?: number; phase?: string; currentBytes?: number; currentSize?: number; source?: string; message?: string } & Partial<Doc>;
+export type ViewerEvent = { sessionId?: string; update?: UpdateState; paths?: string[]; result?: SearchResult; type: string; id?: string; requestId?: string; bytes?: number; size?: number; count?: number; kind?: string; state?: string; error?: string; destination?: string; file?: string; fileIndex?: number; files?: number; completedFiles?: number; failedFiles?: number; phase?: string; currentBytes?: number; currentSize?: number; source?: string; message?: string } & Partial<Doc>;
 declare global {
   const __APP_VERSION__: string;
   interface Window {
     viewer: {
+      sessionInvoke(id: string, method: string, args: unknown[]): Promise<any>;
+      sessionClose(id: string): Promise<void>;
       upload(directory: string, files?: string[], overwrite?: boolean): Promise<{ paths: string[]; completedFiles: number; failedFiles: number; errors: string[]; cancelled?: boolean } | null>;
       exportJsonConfig(filename: string, content: string): Promise<{ path: string } | null>;
       getPathForFile(file: File): string;

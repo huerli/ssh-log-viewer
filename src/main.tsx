@@ -3,12 +3,13 @@ import { createRoot } from 'react-dom/client';
 import type { Bookmark, Doc, Entry, Profile, Row, SearchResult, ViewerEvent, LogFilter, Match, JumpProfile, LocalListing } from './types';
 import { themes, resolveTheme, type ThemeId } from './themes';
 import './style.css';
+import { SessionContext, useSession, useViewer, slotId, type SessionSeed } from './session-context';
 import { TerminalPage } from './TerminalPage';
 import { UpdateControl } from './UpdateControl';
 import { filenamePattern } from '../shared/glob.mjs';
 import { defaultLogFont, logLineHeight, resultLineHeight, logFontFamily } from '../shared/log-font.mjs';
 
-const api = window.viewer;
+
 const defaultLogDirectory = '/system/log';
 const defaultJump: JumpProfile = { enabled: false, host: '', port: 22, username: '', auth: 'password', keyPath: '', password: '', passphrase: '', rememberPassword: true };
 const initial: Profile = { name: '', host: '', port: 22, username: '', auth: 'password', keyPath: '', password: '', passphrase: '', rememberPassword: true };
@@ -106,6 +107,20 @@ function readSearchHistory(): string[] {
     return Array.isArray(saved) ? [...new Set(saved.filter((item): item is string => typeof item === 'string' && !!item.trim() && item.length <= 2048))].slice(0, 30) : [];
   } catch { return []; }
 }
+const remotePathHistoryKey = 'viewer-remote-path-history';
+function readRemotePathHistory(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(remotePathHistoryKey) || '[]');
+    return Array.isArray(saved) ? [...new Set(saved.filter((item): item is string => typeof item === 'string' && !!item.trim() && item.length <= 4096))].slice(0, 30) : [];
+  } catch { return []; }
+}
+const remotePathFavoritesKey = 'viewer-remote-path-favorites';
+function readRemotePathFavorites(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(remotePathFavoritesKey) || '[]');
+    return Array.isArray(saved) ? [...new Set(saved.filter((item): item is string => typeof item === 'string' && !!item.trim() && item.length <= 4096))] : [];
+  } catch { return []; }
+}
 function SearchHistoryInput({ inputRef, query, onChange, history, onClear }: { inputRef: React.RefObject<HTMLInputElement | null>; query: string; onChange: (value: string) => void; history: string[]; onClear: () => void }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -176,6 +191,7 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
   rowHeight: number;
   onBottomChange(bottom: boolean): void;
 }) {
+  const api = useViewer();
   const viewport = useRef<HTMLDivElement>(null);
   const horizontalJump = useRef(-1);
   const scrollLayout = useRef<{ id: string; token: number; ready: boolean; filter?: string; maxStart: number; range: number } | null>(null);
@@ -287,6 +303,7 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
 }
 
 function SearchRows({ results, onJump, rowHeight, searching, onCopy, onError }: { onCopy: () => void; onError: (error: string) => void; searching: boolean; results: SearchResult | null; onJump(match: Match): void; rowHeight: number }) {
+  const api = useViewer();
   const viewport = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState(0);
   const [height, setHeight] = useState(180);
@@ -328,12 +345,26 @@ function SearchRows({ results, onJump, rowHeight, searching, onCopy, onError }: 
   </div>;
 }
 
-function App() {
-  const [telnetPage, setTelnetPage] = useState(false);
+function App({ seed }: { seed?: SessionSeed }) {
+  const api = useViewer();
+  const session = useSession();
+  const [settingsReady, setSettingsReady] = useState(false);
+  const autoStarted = useRef<SessionSeed | undefined>(undefined);
+  const connectButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!settingsReady || !seed || autoStarted.current === seed) return;
+    autoStarted.current = seed;
+    if (seed.kind === 'ssh') connectButton.current?.click();
+    else if (seed.kind === 'log') void run(() => selectLocal(seed.path));
+  }, [settingsReady, seed]);
+  const [telnetPage, setTelnetPage] = useState(seed?.kind === 'ssh' || seed?.kind === 'telnet');
   const [featureEnabled, setFeatureEnabled] = useState({ ssh: false, telnet: true });
-  const [terminalMode, setTerminalMode] = useState<'ssh' | 'telnet'>('telnet');
+  const [terminalMode, setTerminalMode] = useState<'ssh' | 'telnet'>(seed?.kind === 'ssh' ? 'ssh' : 'telnet');
   const modeVersion = useRef(0);
   const [modeSwitching, setModeSwitching] = useState(false);
+  useEffect(() => {
+    if (session.active && (seed?.kind === 'ssh' || seed?.kind === 'telnet')) { setTerminalMode(seed.kind); setTelnetPage(true); }
+  }, [session.active]);
   async function showTerminal(mode: 'ssh' | 'telnet') {
     if (!featureEnabled[mode]) return;
     if (mode === terminalMode && !modeSwitching) { setTelnetPage(true); return; }
@@ -345,12 +376,12 @@ function App() {
     } catch (error) { fail(error); }
     finally { if (version === modeVersion.current) setModeSwitching(false); }
   }
-  const [theme, setTheme] = useState<ThemeId>('midnight');
+  const [theme, setTheme] = useState<ThemeId>(() => resolveTheme(document.documentElement.dataset.theme));
   const [font, setFont] = useState(defaultLogFont);
   const [fontDraft, setFontDraft] = useState(defaultLogFont);
   const [fontSettings, setFontSettings] = useState(false);
   const [fontSaving, setFontSaving] = useState(false);
-  const [profile, setProfile] = useState<Profile>(initial);
+  const [profile, setProfile] = useState<Profile>(seed?.kind === 'ssh' ? seed.profile : initial);
   const [jumpSettings, setJumpSettings] = useState(false);
   const [connectionSettings, setConnectionSettings] = useState(false);
   const [jumpProfiles, setJumpProfiles] = useState<JumpProfile[]>([]);
@@ -365,6 +396,18 @@ function App() {
   const [disconnecting, setDisconnecting] = useState(false);
   const [directory, setDirectory] = useState(defaultLogDirectory);
   const [pathInput, setPathInput] = useState(defaultLogDirectory);
+  const [remotePathHistory, setRemotePathHistory] = useState(readRemotePathHistory);
+  const [remotePathFavorites, setRemotePathFavorites] = useState(readRemotePathFavorites);
+  useEffect(() => { if (session.active) setRemotePathFavorites(readRemotePathFavorites()); }, [session.active]);
+  function toggleRemotePathFavorite() {
+    const path = pathInput.trim();
+    if (!path || path.length > 4096) return;
+    const saved = readRemotePathFavorites();
+    const next = saved.includes(path) ? saved.filter(item => item !== path) : [...saved, path];
+    try { localStorage.setItem(remotePathFavoritesKey, JSON.stringify(next)); }
+    catch { setError('无法保存常用位置，请检查本地存储是否可用'); return; }
+    setRemotePathFavorites(next);
+  }
   const [entries, setEntries] = useState<Entry[]>([]);
   const [fileSource, setFileSource] = useState<'remote' | 'local'>('remote');
   const [localListing, setLocalListing] = useState<LocalListing | null>(null);
@@ -585,6 +628,9 @@ function App() {
 
   async function list(path: string) {
     const response = await api.list(path);
+    const history = [response.path, ...readRemotePathHistory().filter(item => item !== response.path)].slice(0, 30);
+    setRemotePathHistory(history);
+    try { localStorage.setItem(remotePathHistoryKey, JSON.stringify(history)); } catch {}
     setFileSource('remote'); setDirectory(response.path); setPathInput(response.path); setEntries(response.entries); setSelectedFile(''); if (filenameFromSelection) { setFilePattern(selectionListPattern); setFilenameFromSelection(false); }
   }
   async function showLocalPicker(path?: string) {
@@ -597,7 +643,7 @@ function App() {
     setSelectedFile(result.kind === 'file' ? result.path : '');
     setFilePattern(''); setFilenameFromSelection(false); setSelectionListPattern('');
     setLocalPicker(null);
-    if (result.kind === 'file') await open(() => api.openLocalFile(result.path));
+    if (result.kind === 'file') { if (session.beforeConnect({ kind: 'log', path: result.path })) return; await open(() => api.openLocalFile(result.path)); }
     else { setSearchScope('folder'); setMessage(`本地文件夹 · ${result.listing.entries.filter(entry => !entry.directory).length} 个文件`); }
   }
   async function dropLocal(event: React.DragEvent<HTMLDivElement>) {
@@ -618,7 +664,14 @@ function App() {
   const directoryRef = useRef(directory);
   directoryRef.current = directory;
   const [uploading, setUploading] = useState(false);
-  const [overwriteUpload, setOverwriteUpload] = useState(false);
+  const [overwriteUpload, setOverwriteUpload] = useState(() => {
+    try { return localStorage.getItem('viewer-overwrite-upload') === 'true'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('viewer-overwrite-upload', String(overwriteUpload)); }
+    catch { /* storage may be unavailable in restricted environments */ }
+  }, [overwriteUpload]);
   const [draggingUpload, setDraggingUpload] = useState(false);
   const uploadLock = useRef(false);
   async function uploadLocalFiles(files?: string[]) {
@@ -693,12 +746,12 @@ function App() {
     else if (e.type === 'document-error') { setError(e.error || '读取失败'); setFollowing(false); followingRef.current = false; }
     else if (e.type === 'rotated') { setFollowing(false); followingRef.current = false; setError('检测到日志截断或替换，请重新打开文件'); }
   }
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+  useLayoutEffect(() => {
+    if (session.active && settingsReady) document.documentElement.dataset.theme = theme;
+  }, [theme, session.active, settingsReady]);
   useEffect(() => {
       if (!api) return;
-    api.settings().then(async s => { setFeatureEnabled({ ssh: s.sshEnabled !== false, telnet: s.telnetEnabled !== false }); if (!historyTouched.current) { if (s.searchHistory !== undefined) { searchHistoryRef.current = s.searchHistory; setSearchHistory(s.searchHistory); } else if (searchHistoryRef.current.length) await api.saveSearchHistory(searchHistoryRef.current); } if (s.version !== __APP_VERSION__) setError('界面与后台版本不一致，请关闭旧窗口并重新启动工具'); setDirectories(s.directories); setTheme(resolveTheme(s.theme)); setFont(s.logFont || defaultLogFont); setProfiles(s.profiles); setJumpProfiles(s.jumpProfiles); if (s.localPaths?.length) { setExtractedPaths(s.localPaths); setSearchScope('extracted'); } const name = s.profiles.find(p => p.name === s.selectedProfile)?.name || s.profiles[0]?.name; if (name) await selectProfile(name); else if (s.selectedJump) await selectJump(s.selectedJump); }).catch(fail);
+    api.settings().then(async s => { setFeatureEnabled({ ssh: s.sshEnabled !== false, telnet: s.telnetEnabled !== false }); if (!historyTouched.current) { if (s.searchHistory !== undefined) { searchHistoryRef.current = s.searchHistory; setSearchHistory(s.searchHistory); } else if (searchHistoryRef.current.length) await api.saveSearchHistory(searchHistoryRef.current); } if (s.version !== __APP_VERSION__) setError('界面与后台版本不一致，请关闭旧窗口并重新启动工具'); setDirectories(s.directories); setTheme(resolveTheme(s.theme)); setFont(s.logFont || defaultLogFont); setProfiles(s.profiles); setJumpProfiles(s.jumpProfiles); if (s.localPaths?.length) { setExtractedPaths(s.localPaths); setSearchScope('extracted'); } const name = s.profiles.find(p => p.name === s.selectedProfile)?.name || s.profiles[0]?.name; if (seed?.kind !== 'ssh') { if (name) await selectProfile(name); else if (s.selectedJump) await selectJump(s.selectedJump); } setSettingsReady(true); }).catch(fail);
     return api.onEvent(e => {
       if (opening.current && ['ready', 'document-error', 'cache-progress', 'index-progress'].includes(e.type)) pendingEvents.current.push(e);
       else processEvent(e);
@@ -720,7 +773,7 @@ function App() {
       const result = await work();
       if (!result) return;
       setSearchScope(scope || (result.remote && activePattern ? 'remote' : 'current'));
-      docRef.current = result; setDoc(result); setBookmarks(result.bookmarks || []); if (!keepResults) setResults(null); pendingJump.current = line ?? null;
+      docRef.current = result; setDoc(result); if (result && !result.remote) session.title(result.name.replace(/\\/g, '/').split('/').pop() || result.name); setBookmarks(result.bookmarks || []); if (!keepResults) setResults(null); pendingJump.current = line ?? null;
       if (!keepResults) { searchToken.current = ''; setSearching(false); setFiltering(false); }
       setFilter(null); setContextMenu(null); setSelectedLine(null); setFollowing(false); followingRef.current = false;
       go(result.ready ? line ?? 0 : 0);
@@ -756,6 +809,7 @@ function App() {
   }
   useEffect(() => {
     const find = (event: KeyboardEvent) => {
+      if (!session.active) return;
       if (event.defaultPrevented) return;
       if (event.key === 'Escape' && (searching || filtering)) { event.preventDefault(); void cancelSearch(); return; }
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 'f' || event.isComposing) return;
@@ -833,7 +887,7 @@ function App() {
   }
   useEffect(() => { setResultIndex(-1); }, [query, searchScope]);
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
+    const handler = (e: KeyboardEvent) => { if (!session.active) return;
       if ((e.target as HTMLElement)?.closest('.telnet-page') || directorySettings || fontSettings || e.repeat) return;
       const key = [e.ctrlKey ? 'Ctrl' : '', e.metaKey ? 'Meta' : '', e.altKey ? 'Alt' : '', e.shiftKey ? 'Shift' : '', e.key.length === 1 ? e.key.toUpperCase() : e.key].filter(Boolean).join('+');
       if (key === shortcuts.next || key === shortcuts.previous) {
@@ -874,13 +928,13 @@ function App() {
   if (!api) return <div className="browser-warning">请通过桌面程序启动。<code>npm run build && npm start</code></div>;
 
   return <div className="app" style={{ '--log-font-family': logFontFamily(font.family), '--log-font-size': `${font.size}px`, '--log-line-height': `${logLineHeight(font.size)}px`, '--result-line-height': `${resultLineHeight(font.size)}px` } as React.CSSProperties}>
-    <header className="header"><div className="brand"><span className="brand-icon">⌁</span><div><strong>SSH Log Viewer</strong><small>远程日志工作台 · v{__APP_VERSION__}</small></div></div><div className="header-actions"><button className={!telnetPage ? 'primary' : ''} onClick={() => setTelnetPage(false)}>日志查看</button>{(['ssh', 'telnet'] as const).filter(mode => featureEnabled[mode]).map(mode => <button key={mode} disabled={modeSwitching || disconnecting} className={telnetPage && terminalMode === mode ? 'primary' : ''} aria-pressed={telnetPage && terminalMode === mode} onClick={() => void showTerminal(mode)}>{mode === 'ssh' ? 'SSH' : 'Telnet'} 输出</button>)}<button onClick={() => void run(() => showLocalPicker(localListing?.path))} disabled={openingState}>打开本地文件/文件夹</button><button onClick={() => setDirectorySettings(true)}>设置</button></div></header>
+    <header className="header"><div className="brand"><span className="brand-icon">⌁</span><div><strong>SSH Log Viewer</strong><small>远程日志工作台 · v{__APP_VERSION__}</small></div></div><div className="header-actions"><button onClick={() => void run(() => showLocalPicker(localListing?.path))} disabled={openingState}>打开本地文件/文件夹</button><button onClick={() => setDirectorySettings(true)}>设置</button></div></header>
     <UpdateControl settingsOpen={directorySettings} />
-    <div className="workspace">
+    <div className={`workspace${session.leftCollapsed ? ' left-collapsed' : ''}${session.rightCollapsed ? ' right-collapsed' : ''}`}>
       <aside className="left-panel" style={{ display: featureEnabled.ssh || featureEnabled.telnet ? undefined : 'none' }}>
-        {featureEnabled.ssh && <><div className="panel-title ssh-panel-title">SSH <span id="ssh-status-slot" /></div>
+        {featureEnabled.ssh && <><div className="panel-title ssh-panel-title">SSH <span id={slotId(session.id, "ssh-status-slot")} /></div>
         <select aria-label="已保存连接" disabled={!featureEnabled.ssh} value={selectedProfile} onChange={e => void run(() => selectProfile(e.target.value))}><option value="">新建连接…</option>{profiles.map(p => <option key={p.name} value={p.name}>{p.jump?.enabled ? '【跳板连接】' : '【直连】'}{p.name} · {p.username}@{p.host}:{p.port}{p.jump?.enabled ? ` · 经 ${p.jumpName || p.jump.name || p.jump.host}` : ''}</option>)}</select>
-        <div className="connection-actions"><button className="primary" disabled={!featureEnabled.ssh || connecting || disconnecting} onClick={() => void run(async () => { if (!featureEnabled.ssh) return; if (!profile.host.trim() || !profile.username.trim() || (profile.auth === 'password' && !profile.password && !profile.hasPassword) || (profile.auth === 'key' && !profile.keyPath)) { setConnectionSettings(true); setError('请在连接设置中补全主机、用户名和认证信息。'); return; } if (profile.jump?.enabled && (profile.jump.auth === 'password' || !profile.jump.auth) && !profile.jump.password && !profile.jump.hasPassword) { setJumpSettings(true); setError('请在“跳板机密码”中输入登录密码，再保存并使用。连接设置中的密码用于目标机器。'); return; } setConnecting(true); searchToken.current = ''; setFiltering(false); setSearching(false); setFilter(null); setContextMenu(null); setDoc(null); docRef.current = null; setConnection(''); try { const c = await api.connect(profile); setConnection(c.name); setConnectionSettings(false); await saveCurrentProfile(profile); setProfile(p => ({ ...p, password: p.rememberPassword ? p.password : '', passphrase: '', jump: p.jump ? { ...p.jump, password: p.jump.rememberPassword ? p.jump.password : '', passphrase: '' } : undefined })); await list(defaultLogDirectory); await showTerminal('ssh'); } finally { setConnecting(false); } })}>{connecting ? '连接中…' : '连接'}</button>{connecting && <button onClick={() => void run(() => api.disconnect())}>取消连接</button>}{connection && <button disabled={disconnecting} onClick={() => void run(async () => { setDisconnecting(true); try { await api.disconnect(); } finally { setConnection(''); setDoc(null); docRef.current = null; setEntries([]); setDisconnecting(false); } })}>{disconnecting ? '断开中…' : '断开'}</button>}<button className={`connection-settings-toggle ${connectionSettings ? 'active' : ''}`} aria-expanded={connectionSettings} aria-controls="connection-settings" onClick={() => setConnectionSettings(value => !value)}>⚙ 设置</button></div>
+        <div className="connection-actions"><button ref={connectButton} className="primary" disabled={!featureEnabled.ssh || connecting || disconnecting} onClick={() => void run(async () => { if (!featureEnabled.ssh) return; if (!profile.host.trim() || !profile.username.trim() || (profile.auth === 'password' && !profile.password && !profile.hasPassword) || (profile.auth === 'key' && !profile.keyPath)) { setConnectionSettings(true); setError('请在连接设置中补全主机、用户名和认证信息。'); return; } if (profile.jump?.enabled && (profile.jump.auth === 'password' || !profile.jump.auth) && !profile.jump.password && !profile.jump.hasPassword) { setJumpSettings(true); setError('请在“跳板机密码”中输入登录密码，再保存并使用。连接设置中的密码用于目标机器。'); return; } if (session.beforeConnect({ kind: 'ssh', profile })) return; session.title(`SSH · ${profile.name || profile.host}`); setConnecting(true); searchToken.current = ''; setFiltering(false); setSearching(false); setFilter(null); setContextMenu(null); setDoc(null); docRef.current = null; setConnection(''); try { const c = await api.connect(profile); setConnection(c.name); setConnectionSettings(false); await saveCurrentProfile(profile); setProfile(p => ({ ...p, password: p.rememberPassword ? p.password : '', passphrase: '', jump: p.jump ? { ...p.jump, password: p.jump.rememberPassword ? p.jump.password : '', passphrase: '' } : undefined })); await list(defaultLogDirectory); await showTerminal('ssh'); } finally { setConnecting(false); } })}>{connecting ? '连接中…' : '连接'}</button>{connecting && <button onClick={() => void run(() => api.disconnect())}>取消连接</button>}{connection && <button disabled={disconnecting} onClick={() => void run(async () => { setDisconnecting(true); try { await api.disconnect(); } finally { setConnection(''); setDoc(null); docRef.current = null; setEntries([]); setDisconnecting(false); } })}>{disconnecting ? '断开中…' : '断开'}</button>}<button className={`connection-settings-toggle ${connectionSettings ? 'active' : ''}`} aria-expanded={connectionSettings} aria-controls="connection-settings" onClick={() => setConnectionSettings(value => !value)}>⚙ 设置</button></div>
         {connectionSettings && <div id="connection-settings" className="connection-form" role="region" aria-label="连接设置">
           <div className="connection-settings-heading">连接设置 <span>目标服务器与认证</span></div>
           <div className="connection-mode" role="radiogroup" aria-label="连接方式"><label><input type="radio" name="connection-mode" aria-label="本地连接" checked={!jumpConfig.enabled} onChange={() => updateJump({ enabled: false })} />直接连接</label><label><input type="radio" name="connection-mode" aria-label="通过跳板机连接" checked={jumpConfig.enabled} onChange={() => { jumpLoadToken.current++; setProfile(p => ({ ...p, host: '127.0.0.1', port: 2223, username: 'root', auth: 'password', password: '', hasPassword: false, passphrase: '', jump: { ...defaultJump, ...p.jump, enabled: true } })); }} />通过跳板机连接</label></div>
@@ -896,9 +950,10 @@ function App() {
           <div className="connection-config-actions"><button className="danger-button" disabled={!selectedProfile || connecting} onClick={() => void run(deleteCurrentProfile)}>删除连接</button><button className="save-connection primary" onClick={() => void run(async () => { await saveCurrentProfile(); setMessage('连接配置已保存'); setConnectionSettings(false); })}>保存配置</button></div>
         </div>}
         </>}
-        <div id="telnet-connection-slot" className={featureEnabled.ssh ? undefined : 'standalone-telnet'} />
+        <div id={slotId(session.id, "telnet-connection-slot")} className={featureEnabled.ssh ? undefined : 'standalone-telnet'} />
         {featureEnabled.ssh && <><div className="panel-title files-title">{localMode ? '本地文件' : '远程文件'} <div className="file-source-controls"><select aria-label="文件来源" value={fileSource} onChange={e => { const source = e.target.value as 'remote' | 'local'; setFileSource(source); setSelectedFile(''); setFilePattern(''); setFilenameFromSelection(false); setSelectionListPattern(''); setSearchScope(source === 'local' ? 'folder' : 'current'); }}><option value="remote">远程</option><option value="local" disabled={!localListing}>本地</option></select><button disabled={!canBrowse} onClick={() => void run(() => browse(browseDirectory))}>↻</button></div></div>
-        <form className="path-bar" onSubmit={e => { e.preventDefault(); void run(() => browse(localMode ? localPathInput : pathInput)); }}><input aria-label={localMode ? "本地路径" : "远程路径"} value={localMode ? localPathInput : pathInput} onChange={e => localMode ? setLocalPathInput(e.target.value) : setPathInput(e.target.value)} /><button disabled={!canBrowse}>前往</button></form>
+        <form className="path-bar" onSubmit={e => { e.preventDefault(); void run(() => browse(localMode ? localPathInput : pathInput)); }}><input list={localMode ? undefined : slotId(session.id, 'remote-path-history')} onFocus={() => { if (!localMode) setRemotePathHistory(readRemotePathHistory()); }} autoComplete="off" aria-label={localMode ? "本地路径" : "远程路径"} value={localMode ? localPathInput : pathInput} onChange={e => localMode ? setLocalPathInput(e.target.value) : setPathInput(e.target.value)} /><datalist id={slotId(session.id, 'remote-path-history')}>{remotePathHistory.map(path => <option key={path} value={path} />)}</datalist>{!localMode && <button type="button" className="favorite-path-toggle" aria-label={remotePathFavorites.includes(pathInput.trim()) ? '取消收藏远程位置' : '收藏远程位置'} title={remotePathFavorites.includes(pathInput.trim()) ? '取消收藏此位置' : '收藏此位置'} aria-pressed={remotePathFavorites.includes(pathInput.trim())} disabled={!pathInput.trim() || pathInput.trim().length > 4096} onClick={toggleRemotePathFavorite}>{remotePathFavorites.includes(pathInput.trim()) ? '★' : '☆'}</button>}<button disabled={!canBrowse}>前往</button></form>
+        {!localMode && <select className="favorite-paths" aria-label="常用远程位置" value="" onFocus={() => setRemotePathFavorites(readRemotePathFavorites())} onChange={e => { const path = e.target.value; if (!path) return; setPathInput(path); if (connection) void run(() => list(path)); }}><option value="">{remotePathFavorites.length ? '★ 常用位置…' : '★ 暂无收藏，点击 ☆ 添加'}</option>{remotePathFavorites.map(path => <option key={path} value={path}>{path}</option>)}</select>}
         <div className="file-pattern"><input aria-label="文件名匹配" title={filenameFromSelection ? `${filePattern}（按 Enter 应用匹配）` : filePattern} onKeyDown={e => { if (e.key === 'Enter') { setFilenameFromSelection(false); setSelectionListPattern(''); setSearchScope(localMode ? 'folder' : (doc && !doc.remote) || searchScope === 'extracted' ? extractedPaths.length ? 'extracted' : 'current' : filePattern ? 'remote' : 'current'); } }} placeholder="文件名匹配：signal.2026-10-12.*" value={filePattern} onChange={e => { setSelectionListPattern(''); setFilenameFromSelection(false); setFilePattern(e.target.value); setSearchScope(localMode ? 'folder' : (doc && !doc.remote) || searchScope === 'extracted' ? extractedPaths.length ? 'extracted' : 'current' : e.target.value ? 'remote' : 'current'); setSelectedFile(''); }} /><button type="button" title="识别日期并匹配该日期的所有文件" onClick={applyDateWildcard}>日期*</button>{filePattern && <button title="清除文件名匹配" onClick={() => { setSelectionListPattern(''); setFilenameFromSelection(false); setFilePattern(''); setSearchScope(localMode ? 'folder' : 'current'); }}>×</button>}</div>
         {activePattern && <small className="pattern-hint">{patternError || `匹配 ${matchedFileCount} 个文件 · 搜索覆盖匹配日志及 .gz · 支持日期/关键词片段`}</small>}
         {localMode && canBrowse && <div className="batch-actions"><button disabled={!!patternError || !matchedArchiveCount || task?.state === 'running'} onClick={() => void extractLocalMatches()}>解压匹配文件（{matchedArchiveCount}）</button></div>}
@@ -913,15 +968,15 @@ function App() {
         <div className="file-actions"><button title="选择本地文件上传到当前远程目录" disabled={localMode || !connection || uploading || task?.state === 'running'} onClick={() => void run(() => uploadLocalFiles())}>{uploading ? '上传中…' : '上传'}</button><button disabled={!selectedFile || openingState} onClick={() => void open(() => viewFile(selectedFile))}>查看</button><button disabled={localMode || !selectedFile} onClick={() => void run(async () => { const result = await api.download(selectedFile) as { destination: string } | null; if (result) { setExtractedPaths([result.destination]); setSearchScope('extracted'); } })}>下载</button><button disabled={task?.state === 'running' || (localMode && !selectedFile ? !!patternError || !matchedArchiveCount : !canExtractSelection)} title={localMode && !selectedFile ? '解压当前列表中所有匹配的压缩文件' : '解压选中的压缩文件'} onClick={() => void (localMode && !selectedFile ? extractLocalMatches() : extract(selectedFile))}>{localMode && !selectedFile ? '解压匹配' : '解压'}</button></div>
         </>}
       </aside>
+      <button className="sidebar-toggle sidebar-toggle-left" aria-label={session.leftCollapsed ? '展开连接栏' : '收起连接栏'} title={session.leftCollapsed ? '展开连接栏' : '收起连接栏'} aria-expanded={!session.leftCollapsed} onClick={session.toggleLeft}>{session.leftCollapsed ? '›' : '‹'}</button>
       <main className={'main-panel unified-terminal ' + (telnetPage ? 'show-telnet' : 'show-log')}>
         <div className="log-view-section">
-        <div className="document-bar"><span className="file-badge">LOG</span><strong title={doc ? `${doc.name}${doc.archive ? `\n来源压缩文件：${doc.archive}` : ''}` : undefined}>{doc ? doc.remote ? doc.name : doc.name.replace(/\\/g, '/').split('/').pop() : '尚未打开日志'}</strong>{doc?.archive && <span className="source-origin" title={`来源压缩文件：${doc.archive}`}>本地解压 · {doc.archive.replace(/\\/g, '/').split('/').pop()}</span>}{doc?.origin && <span className="source-origin" title={doc.origin}>来源：{doc.origin}</span>}{doc && <span>{size(doc.size)} · {doc.ready ? `${doc.lines.toLocaleString()} 行` : '缓存中'}</span>}</div>
+        <div className="document-bar session-document-bar">{session.tabBar}{doc && <span className="session-document-meta" title={doc.name}>{size(doc.size)} · {doc.ready ? `${doc.lines.toLocaleString()} 行` : '缓存中'}</span>}</div>
         <form className="search-bar" onSubmit={e => { e.preventDefault(); void search((e.currentTarget.elements.namedItem('search-query') as HTMLInputElement)?.value ?? query, regex); }}><span>⌕</span><SearchHistoryInput inputRef={searchInput} query={query} onChange={setQuery} history={searchHistory} onClear={() => void persistSearchHistory([]).catch(fail)} /><label><input type="checkbox" checked={sensitive} onChange={e => setSensitive(e.target.checked)} />Aa</label><label><input type="checkbox" checked={regex} onChange={e => setRegex(e.target.checked)} />正则</label><button className="primary" disabled={(searchScope === 'folder' && (!localListing || !!patternError)) || (searchScope === 'current' && !doc?.ready) || (searchScope === 'extracted' && !extractedPaths.length) || (searchScope === 'remote' && (!activePattern || !connection || !!patternError || !matchedFileCount)) || openingState || !query || searching || filtering}>搜索全文</button>{(searching || filtering) && <button type="button" onClick={() => void cancelSearch()}>取消</button>}</form>
-        <div className="search-scope"><label>搜索范围<select aria-label="搜索范围" value={searchScope} onChange={e => { setSearchScope(e.target.value as 'current' | 'extracted' | 'remote' | 'folder'); }}><option value="current">当前打开文件{doc && !doc.remote ? '（本地）' : ''}</option><option value="extracted" disabled={!extractedPaths.length}>已下载/解压文件（本地 {extractedPaths.length} 个）</option><option value="folder" disabled={!localListing || !localMode}>本地文件夹（当前目录匹配文件）</option><option value="remote" disabled={localMode || !connection || !activePattern}>匹配文件（优先本地）</option></select></label><small>{searchScope === 'folder' ? '搜索本地当前目录的匹配文件，支持普通日志和 .gz；不包含子目录' : searchScope === 'extracted' ? '直接搜索已下载或解压的本地文件，不重新下载' : searchScope === 'remote' ? '优先使用该连接已下载的匹配文件；无本地副本时读取远程' : '仅搜索当前打开的日志'} · 优先搜索范围内当前打开的文件 · 普通搜索支持 * 通配</small></div>
-        <div className="log-toolbar"><label>高亮<input value={rules} onChange={e => { setRules(e.target.value); setSuppressedHighlights([]); }} placeholder="多个关键词用逗号分隔" /></label><div className="toolbar-right"><button onClick={() => { setError(''); setFontDraft(font); setFontSettings(true); }}>字体设置</button><button disabled={!doc} onClick={() => go(0)}>首行</button><button disabled={!doc} onClick={() => go(doc?.ready ? doc.lines : doc?.preview?.length || 0)}>末尾</button><input className="jump-input" aria-label="跳转行号" placeholder="行号" value={jumpInput} onChange={e => setJumpInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && doc?.ready) goOriginal(Math.max(0, (Number(jumpInput) || 1) - 1)); }} /><button disabled={!doc?.ready} onClick={() => goOriginal(Math.max(0, (Number(jumpInput) || 1) - 1))}>跳转</button><button className={following ? 'primary' : ''} aria-pressed={following} disabled={!doc?.ready || doc.compressed || openingState || !!filter || filtering} onClick={() => { const value = !following; setFollowing(value); followingRef.current = value; void run(async () => { try { await api.follow(value); if (value && doc) go(doc.lines); } catch (error) { setFollowing(false); followingRef.current = false; throw error; } }); }}>{following ? '停止跟随' : '实时跟随'}</button></div></div>
+        <div className="search-scope"><label>搜索范围<select aria-label="搜索范围" value={searchScope} onChange={e => { setSearchScope(e.target.value as 'current' | 'extracted' | 'remote' | 'folder'); }}><option value="current">当前打开文件{doc && !doc.remote ? '（本地）' : ''}</option><option value="extracted" disabled={!extractedPaths.length}>已下载/解压文件（本地 {extractedPaths.length} 个）</option><option value="folder" disabled={!localListing || !localMode}>本地文件夹（当前目录匹配文件）</option><option value="remote" disabled={localMode || !connection || !activePattern}>匹配文件（优先本地）</option></select></label><small>{searchScope === 'folder' ? '搜索本地当前目录的匹配文件，支持普通日志和 .gz；不包含子目录' : searchScope === 'extracted' ? '直接搜索已下载或解压的本地文件，不重新下载' : searchScope === 'remote' ? '优先使用该连接已下载的匹配文件；无本地副本时读取远程' : '仅搜索当前打开的日志'} · 优先搜索范围内当前打开的文件 · 普通搜索支持 * 通配</small><label className="scope-highlight">高亮<input value={rules} onChange={e => { setRules(e.target.value); setSuppressedHighlights([]); }} placeholder="多个关键词用逗号分隔" /></label><div className="toolbar-right"><button onClick={() => { setError(''); setFontDraft(font); setFontSettings(true); }}>字体设置</button><button disabled={!doc} onClick={() => go(0)}>首行</button><button disabled={!doc} onClick={() => go(doc?.ready ? doc.lines : doc?.preview?.length || 0)}>末尾</button><input className="jump-input" aria-label="跳转行号" placeholder="行号" value={jumpInput} onChange={e => setJumpInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && doc?.ready) goOriginal(Math.max(0, (Number(jumpInput) || 1) - 1)); }} /><button disabled={!doc?.ready} onClick={() => goOriginal(Math.max(0, (Number(jumpInput) || 1) - 1))}>跳转</button><button className={following ? 'primary' : ''} aria-pressed={following} disabled={!doc?.ready || doc.compressed || openingState || !!filter || filtering} onClick={() => { const value = !following; setFollowing(value); followingRef.current = value; void run(async () => { try { await api.follow(value); if (value && doc) go(doc.lines); } catch (error) { setFollowing(false); followingRef.current = false; throw error; } }); }}>{following ? '停止跟随' : '实时跟随'}</button></div></div>
         {filter && <div className="filter-bar"><span title={filter.query}>筛选：{filter.query} · {filter.total.toLocaleString()} 个匹配行{filter.capped ? '（仅展示前 100 万行）' : ''}</span><button onClick={clearFilter}>取消筛选</button></div>}
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError('')}>×</button></div>}
-        {(['ssh', 'telnet'] as const).map(mode => <div key={mode} id={mode + '-display-slot'} className="shared-telnet-display" style={{ display: telnetPage && terminalMode === mode ? 'flex' : 'none' }} />)}
+        {(['ssh', 'telnet'] as const).map(mode => <div key={mode} id={slotId(session.id, mode + '-display-slot')} className="shared-telnet-display" style={{ display: telnetPage && terminalMode === mode ? 'flex' : 'none' }} />)}
         {!telnetPage && <div className={`log-drop-zone${draggingLog ? ' dragging' : ''}`} aria-label="日志查看区域"
           onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = openingState || dropOpening.current ? 'none' : 'copy'; setDraggingLog(!openingState && !dropOpening.current); } }}
           onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingLog(false); }}
@@ -933,15 +988,16 @@ function App() {
 </div>}
       </section>
         </div>
-        <div className="embedded-telnet">{(['ssh', 'telnet'] as const).filter(mode => featureEnabled[mode]).map(mode => <TerminalPage key={mode} protocol={mode} active={terminalMode === mode && !modeSwitching} sshConnection={connection} sshConnecting={connecting} outputVisible={telnetPage} settingsOpen={directorySettings} font={font} onShowOutput={() => showTerminal(mode)} />)}</div>
+        <div className="embedded-telnet">{(['ssh', 'telnet'] as const).filter(mode => featureEnabled[mode]).map(mode => <TerminalPage key={mode} protocol={mode} seed={mode === 'telnet' && seed?.kind === 'telnet' ? seed.terminal : undefined} active={session.active && terminalMode === mode && !modeSwitching} sshConnection={connection} sshConnecting={connecting} outputVisible={telnetPage} settingsOpen={directorySettings} font={font} onShowOutput={() => showTerminal(mode)} />)}</div>
       </main>
+      <button className="sidebar-toggle sidebar-toggle-right" aria-label={session.rightCollapsed ? '展开下载栏' : '收起下载栏'} title={session.rightCollapsed ? '展开下载栏' : '收起下载栏'} aria-expanded={!session.rightCollapsed} onClick={session.toggleRight}>{session.rightCollapsed ? '‹' : '›'}</button>
       <DownloadedFiles autoExpandPaths={autoExpandPaths} paths={downloadedPaths} roots={[directories.download, directories.extract]} selected={!doc?.remote ? doc?.name : undefined} disabled={openingState} onRefresh={refreshDownloadedFiles} onError={setError} onOpenFolder={folder => void run(async () => { const result = await api.selectLocalPath(folder); setLocalListing(result.listing); setLocalPathInput(result.listing.path); setFileSource('local'); setSearchScope('folder'); setSelectedFile(''); setFilePattern(''); setFilenameFromSelection(false); setSelectionListPattern(''); setMessage(`本地文件夹 · ${result.listing.entries.filter(entry => !entry.directory).length} 个文件`); })} onOpen={file => { setExtractedPaths([file]); void open(() => api.openExtracted(file), undefined, false, 'extracted'); }} />
 
     </div>
     {jumpSettings && <div className="settings-backdrop" onClick={() => setJumpSettings(false)}><section className="directory-settings jump-settings" role="dialog" aria-label="跳板机配置" onClick={e => e.stopPropagation()}><div className="panel-title">跳板机配置<button aria-label="关闭跳板机配置" onClick={() => setJumpSettings(false)}>×</button></div><label>已保存跳板机<select aria-label="已保存跳板机" value={profile.jumpName || ''} onChange={e => void run(() => selectJump(e.target.value))}><option value="">新建跳板机…</option>{jumpProfiles.map(item => <option key={item.name} value={item.name}>{item.name} · {item.host}:{item.port}</option>)}</select></label><label>从已有服务器导入<select aria-label="从已有服务器导入" value="" onChange={e => void run(() => importServerAsJump(e.target.value))}><option value="">选择已保存的服务器…</option>{profiles.map(item => <option key={item.name} value={item.name}>{item.name} · {item.username}@{item.host}:{item.port}</option>)}</select></label><small className="hint">填入服务器地址及认证信息，确认后点击“保存并使用”。</small><label>跳板机名称<input aria-label="跳板机名称" placeholder="例如：办公室跳板机" value={jumpConfig.name || ''} onChange={e => updateJump({ name: e.target.value })} /></label><label>跳板机主机<input aria-label="跳板机主机" value={jumpConfig.host} onChange={e => updateJump({ host: e.target.value })} /></label><label>跳板机端口<input aria-label="跳板机端口" type="number" value={jumpConfig.port} onChange={e => updateJump({ port: Number(e.target.value) })} /></label><label>跳板机用户名<input aria-label="跳板机用户名" value={jumpConfig.username} onChange={e => updateJump({ username: e.target.value })} /></label><label>跳板机认证方式<select aria-label="跳板机认证方式" value={jumpConfig.auth} onChange={e => updateJump({ auth: e.target.value })}><option value="password">密码</option><option value="key">私钥</option><option value="agent">SSH Agent</option></select></label>{jumpConfig.auth === 'password' && <><label>跳板机密码<input aria-label="跳板机密码" type="password" value={jumpConfig.password || ''} onChange={e => updateJump({ password: e.target.value })} /></label><label className="jump-enable"><input type="checkbox" aria-label="保存跳板机密码" checked={jumpConfig.rememberPassword ?? true} onChange={e => updateJump({ rememberPassword: e.target.checked })} />保存跳板机密码</label></>}{jumpConfig.auth === 'key' && <><label>跳板机私钥<div className="inline"><input aria-label="跳板机私钥" value={jumpConfig.keyPath} onChange={e => updateJump({ keyPath: e.target.value })} /><button onClick={() => void run(async () => { const file = await api.chooseKey(); if (file) updateJump({ keyPath: file }); })}>选择私钥</button></div></label><label>跳板机私钥口令<input aria-label="跳板机私钥口令" type="password" value={jumpConfig.passphrase || ''} onChange={e => updateJump({ passphrase: e.target.value })} /></label></>}<p className="hint">不勾选保存密码时，密码仅用于当前会话，重启后需重新输入。连接设置中的主机、端口、用户名和认证信息用于目标机器。已有反向隧道时，目标主机填 127.0.0.1、端口填跳板机上的监听端口。此功能连接已有隧道，目标机器仍需先建立反向隧道。</p>{error && <p className="settings-error">{error}</p>}<div className="inline"><button className="primary" onClick={() => void run(async () => { await saveJumpCurrent(); setJumpSettings(false); })}>保存并使用</button><button className="danger-button" disabled={!profile.jumpName || connecting} onClick={() => void run(deleteCurrentJump)}>删除跳板机</button><button onClick={() => setJumpSettings(false)}>关闭</button></div></section></div>}
     {fontSettings && <div className="settings-backdrop" onClick={() => !fontSaving && setFontSettings(false)}><form className="directory-settings font-settings" role="dialog" aria-label="日志字体设置" onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); setFontSaving(true); void run(async () => { const saved = await api.saveLogFont(fontDraft); setFont(saved); setFontSettings(false); }).finally(() => setFontSaving(false)); }}><div className="panel-title">日志字体设置<button type="button" aria-label="关闭字体设置" disabled={fontSaving} onClick={() => setFontSettings(false)}>×</button></div><label>字体名称<input aria-label="日志字体" list="log-font-options" maxLength={100} required value={fontDraft.family} onChange={e => setFontDraft({ ...fontDraft, family: e.target.value })} /></label><datalist id="log-font-options">{['Cascadia Code', 'Consolas', 'DejaVu Sans Mono', 'JetBrains Mono', 'Fira Code', 'Noto Sans Mono CJK SC', 'Microsoft YaHei'].map(family => <option key={family} value={family} />)}</datalist><label>字号（px）<input aria-label="日志字号" type="number" min={10} max={32} step={1} required value={Number.isNaN(fontDraft.size) ? '' : fontDraft.size} onChange={e => setFontDraft({ ...fontDraft, size: e.target.valueAsNumber })} /></label><p className="hint">可选择或输入本机已安装的字体名称；未安装的字体会使用备用字体。应用后日志正文、搜索结果及 SSH / Telnet 终端同步生效，重启后保留。</p><div className="font-preview" style={{ fontFamily: logFontFamily(fontDraft.family), fontSize: `${Number.isFinite(fontDraft.size) ? Math.max(10, Math.min(32, fontDraft.size)) : 12}px` }}>2026-10-13 12:34:56 INFO 日志字体预览<br />连接成功 · ERROR 0123456789 AaBb<br />罗马数字 Ⅰ Ⅱ Ⅲ Ⅳ Ⅴ Ⅵ Ⅶ Ⅷ Ⅸ Ⅹ Ⅺ Ⅻ<br />混排 name=XⅡ9 · XⅢ9 · DK(机3) · 小写 ⅰ ⅱ ⅲ ⅳ</div>{error && <p className="settings-error">{error}</p>}<div className="inline"><button type="button" disabled={fontSaving} onClick={() => setFontDraft({ ...defaultLogFont })}>恢复默认</button><button className="primary" disabled={fontSaving}>{fontSaving ? '保存中…' : '应用并保存'}</button><button type="button" disabled={fontSaving} onClick={() => setFontSettings(false)}>取消</button></div></form></div>}
     {localPicker && <div className="settings-backdrop" onClick={() => setLocalPicker(null)}><section className="directory-settings local-picker" role="dialog" aria-label="打开本地文件或文件夹" onClick={e => e.stopPropagation()}><div className="panel-title">打开本地文件或文件夹<button aria-label="关闭本地选择" onClick={() => setLocalPicker(null)}>×</button></div><form className="path-bar" onSubmit={e => { e.preventDefault(); void run(() => selectLocal(pickerPath)); }}><input aria-label="选择路径" value={pickerPath} onChange={e => setPickerPath(e.target.value)} /><button>打开路径</button></form><div className="file-list"><button className="file-entry" disabled={localPicker.path === localPicker.root} onClick={() => void run(() => showLocalPicker(join(localPicker.path, '..')))}>↰ 上级目录</button>{localPicker.entries.map(entry => <button key={entry.name} className={`file-entry ${pickerSelection === entry.name ? 'selected' : ''}`} onClick={() => setPickerSelection(entry.name)} onDoubleClick={() => void run(() => entry.directory ? showLocalPicker(join(localPicker.path, entry.name)) : selectLocal(join(localPicker.path, entry.name)))}><span className={entry.directory ? 'folder' : 'file'}>{entry.directory ? '▸' : '≡'}</span><span>{entry.name}</span><small>{entry.directory ? '文件夹' : size(entry.size)}</small></button>)}</div><p className="hint">选择文件或文件夹后点击打开；双击文件夹进入目录。未选择项目时打开当前文件夹。</p>{error && <p className="settings-error">{error}</p>}<div className="inline"><button className="primary" disabled={openingState} onClick={() => void run(() => selectLocal(pickerSelection ? join(localPicker.path, pickerSelection) : localPicker.path))}>打开</button><button onClick={() => setLocalPicker(null)}>取消</button></div></section></div>}
-    {directorySettings && <div className="settings-backdrop" onClick={() => setDirectorySettings(false)}><section className="directory-settings app-settings" role="dialog" aria-label="设置" onClick={e => e.stopPropagation()}><div className="panel-title settings-heading"><div><strong>设置</strong><small>软件更新与日志模式设置</small></div><button aria-label="关闭目录设置" onClick={() => setDirectorySettings(false)}>×</button></div><div className="settings-groups"><section className="settings-section" aria-labelledby="settings-update-heading"><h2 id="settings-update-heading">软件更新</h2><div className="settings-grid settings-update-grid"><section className="settings-card"><h3>版本与升级</h3><p>检查并安装最新发行版</p><div id="update-settings-slot" /></section></div></section><section className="settings-section" aria-labelledby="settings-log-heading"><h2 id="settings-log-heading">日志模式设置</h2><div className="settings-grid">{(['ssh', 'telnet'] as const).map(mode => <section className="settings-card" key={mode}><div className="settings-card-heading"><div><h3>{mode === 'ssh' ? 'SSH' : 'Telnet'}</h3><p>输出日志与常用命令配置</p></div><label className="feature-toggle"><input type="checkbox" checked={featureEnabled[mode]} onChange={e => { const enabled = e.target.checked; setFeatureEnabled(current => ({ ...current, [mode]: enabled })); if (mode === 'ssh' && !enabled && connection) void run(async () => { await api.disconnect(); setConnection(''); setDoc(null); docRef.current = null; setEntries([]); }); void run(() => api.saveFeatureEnabled(mode, enabled)); }} /><span aria-hidden="true" /></label></div>{featureEnabled[mode] && <div id={mode + '-settings-slot'} className="inline terminal-settings-slot" />}</section>)}<section className="settings-card settings-appearance"><h3>外观</h3><p>选择适合当前环境的界面配色</p><label className="theme-picker"><span className="theme-dot" /><select aria-label="颜色主题" value={theme} onChange={e => { const selected = resolveTheme(e.target.value); setTheme(selected); void run(() => api.saveTheme(selected)); }}>{themes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></section><section className="settings-card settings-shortcuts"><h3>搜索结果快捷键</h3><p>快速切换全文搜索中的匹配结果</p>{(['previous', 'next'] as const).map(action => <label key={action}>{action === 'next' ? '下一个结果' : '上一个结果'}<input aria-label={action === 'next' ? '下一个结果快捷键' : '上一个结果快捷键'} readOnly value={shortcuts[action]} onKeyDown={e => { e.preventDefault(); e.stopPropagation(); if (['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'Escape'].includes(e.key)) return; const key = [e.ctrlKey ? 'Ctrl' : '', e.metaKey ? 'Meta' : '', e.altKey ? 'Alt' : '', e.shiftKey ? 'Shift' : '', e.key.length === 1 ? e.key.toUpperCase() : e.key].filter(Boolean).join('+'); const updated = { ...shortcuts, [action]: key }; if (updated.next === updated.previous) { setError('上一个与下一个结果不能使用相同快捷键'); return; } setShortcuts(updated); localStorage.setItem('viewer-shortcuts', JSON.stringify(updated)); }} /></label>)}<small>点击输入框后按下快捷键，自动保存。</small></section><section className="settings-card settings-transfer"><div className="settings-card-heading"><div><h3>文件传输</h3><p>强制覆盖</p></div><label className="feature-toggle"><input type="checkbox" aria-label="强制覆盖" checked={overwriteUpload} disabled={uploading} onChange={e => setOverwriteUpload(e.target.checked)} /><span aria-hidden="true" /></label></div><p className="hint">SSH 上传时覆盖远程同名普通文件，默认关闭；关闭时跳过同名文件。</p></section><section className="settings-card settings-storage"><h3>文件存储</h3><p>管理下载文件、解压文件与自动记录的日志</p>{(['download', 'extract'] as const).map(kind => <label key={kind}>{kind === 'download' ? '下载目录' : '解压目录'}<div className="inline"><input aria-label={kind === 'download' ? '默认下载目录' : '默认解压目录'} readOnly value={directories[kind]} /><button onClick={() => void run(async () => setDirectories(await api.chooseDirectory(kind)))}>选择目录</button></div></label>)}<p className="hint">选择后自动保存。下载按IP/远端文件夹名称/下载时间（YYYY-MM-DD_HH）/原文件名保存，同名文件保留已有文件；远程解压按相同层级归档到压缩包名目录，重名添加编号，完成后自动打开日志。</p></section><section className="settings-card settings-connection-transfer"><h3>登录配置迁移</h3><p>导出或导入 SSH、Telnet 的主机和登录配置</p><div className="inline"><button type="button" disabled={configExporting} onClick={() => void run(exportConnectionConfig)}>{configExporting ? '导出中…' : '导出登录配置'}</button><button type="button" onClick={() => connectionTransferInput.current?.click()}>导入登录配置</button></div><small className="hint">导出文件不包含密码、私钥口令或 Web 令牌；导入后请在对应设置中重新填写。</small>{connectionTransferMessage && <p role="status">{connectionTransferMessage}</p>}<input ref={connectionTransferInput} type="file" accept=".json,application/json" aria-label="导入登录配置文件" hidden onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void run(() => importConnectionConfig(file)); }} /></section></div></section></div><footer className="settings-footer"><span>设置更改后自动保存</span><button className="primary" onClick={() => setDirectorySettings(false)}>完成</button></footer></section></div>}
+    {directorySettings && <div className="settings-backdrop" onClick={() => setDirectorySettings(false)}><section className="directory-settings app-settings" role="dialog" aria-label="设置" onClick={e => e.stopPropagation()}><div className="panel-title settings-heading"><div><strong>设置</strong><small>软件更新与日志模式设置</small></div><button aria-label="关闭目录设置" onClick={() => setDirectorySettings(false)}>×</button></div><div className="settings-groups"><section className="settings-section" aria-labelledby="settings-update-heading"><h2 id="settings-update-heading">软件更新</h2><div className="settings-grid settings-update-grid"><section className="settings-card"><h3>版本与升级</h3><p>检查并安装最新发行版</p><div id={slotId(session.id, "update-settings-slot")} /></section></div></section><section className="settings-section" aria-labelledby="settings-log-heading"><h2 id="settings-log-heading">日志模式设置</h2><div className="settings-grid">{(['ssh', 'telnet'] as const).map(mode => <section className="settings-card" key={mode}><div className="settings-card-heading"><div><h3>{mode === 'ssh' ? 'SSH' : 'Telnet'}</h3><p>输出日志与常用命令配置</p></div><label className="feature-toggle"><input type="checkbox" checked={featureEnabled[mode]} onChange={e => { const enabled = e.target.checked; setFeatureEnabled(current => ({ ...current, [mode]: enabled })); if (mode === 'ssh' && !enabled && connection) void run(async () => { await api.disconnect(); setConnection(''); setDoc(null); docRef.current = null; setEntries([]); }); void run(() => api.saveFeatureEnabled(mode, enabled)); }} /><span aria-hidden="true" /></label></div>{featureEnabled[mode] && <div id={slotId(session.id, mode + '-settings-slot')} className="inline terminal-settings-slot" />}</section>)}<section className="settings-card settings-appearance"><h3>外观</h3><p>选择适合当前环境的界面配色</p><label className="theme-picker"><span className="theme-dot" /><select aria-label="颜色主题" value={theme} onChange={e => { const selected = resolveTheme(e.target.value); setTheme(selected); void run(() => api.saveTheme(selected)); }}>{themes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></section><section className="settings-card settings-shortcuts"><h3>搜索结果快捷键</h3><p>快速切换全文搜索中的匹配结果</p>{(['previous', 'next'] as const).map(action => <label key={action}>{action === 'next' ? '下一个结果' : '上一个结果'}<input aria-label={action === 'next' ? '下一个结果快捷键' : '上一个结果快捷键'} readOnly value={shortcuts[action]} onKeyDown={e => { e.preventDefault(); e.stopPropagation(); if (['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'Escape'].includes(e.key)) return; const key = [e.ctrlKey ? 'Ctrl' : '', e.metaKey ? 'Meta' : '', e.altKey ? 'Alt' : '', e.shiftKey ? 'Shift' : '', e.key.length === 1 ? e.key.toUpperCase() : e.key].filter(Boolean).join('+'); const updated = { ...shortcuts, [action]: key }; if (updated.next === updated.previous) { setError('上一个与下一个结果不能使用相同快捷键'); return; } setShortcuts(updated); localStorage.setItem('viewer-shortcuts', JSON.stringify(updated)); }} /></label>)}<small>点击输入框后按下快捷键，自动保存。</small></section><section className="settings-card settings-transfer"><div className="settings-card-heading"><div><h3>文件传输</h3><p>强制覆盖</p></div><label className="feature-toggle"><input type="checkbox" aria-label="强制覆盖" checked={overwriteUpload} disabled={uploading} onChange={e => setOverwriteUpload(e.target.checked)} /><span aria-hidden="true" /></label></div><p className="hint">SSH 上传时覆盖远程同名普通文件，默认关闭；关闭时跳过同名文件。</p></section><section className="settings-card settings-storage"><h3>文件存储</h3><p>管理下载文件、解压文件与自动记录的日志</p>{(['download', 'extract'] as const).map(kind => <label key={kind}>{kind === 'download' ? '下载目录' : '解压目录'}<div className="inline"><input aria-label={kind === 'download' ? '默认下载目录' : '默认解压目录'} readOnly value={directories[kind]} /><button onClick={() => void run(async () => setDirectories(await api.chooseDirectory(kind)))}>选择目录</button></div></label>)}<p className="hint">选择后自动保存。下载按IP/远端文件夹名称/下载时间（YYYY-MM-DD_HH）/原文件名保存，同名文件保留已有文件；远程解压按相同层级归档到压缩包名目录，重名添加编号，完成后自动打开日志。</p></section><section className="settings-card settings-connection-transfer"><h3>登录配置迁移</h3><p>导出或导入 SSH、Telnet 的主机和登录配置</p><div className="inline"><button type="button" disabled={configExporting} onClick={() => void run(exportConnectionConfig)}>{configExporting ? '导出中…' : '导出登录配置'}</button><button type="button" onClick={() => connectionTransferInput.current?.click()}>导入登录配置</button></div><small className="hint">导出文件不包含密码、私钥口令或 Web 令牌；导入后请在对应设置中重新填写。</small>{connectionTransferMessage && <p role="status">{connectionTransferMessage}</p>}<input ref={connectionTransferInput} type="file" accept=".json,application/json" aria-label="导入登录配置文件" hidden onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void run(() => importConnectionConfig(file)); }} /></section></div></section></div><footer className="settings-footer"><span>设置更改后自动保存</span><button className="primary" onClick={() => setDirectorySettings(false)}>完成</button></footer></section></div>}
     {contextMenu && <div className="text-context-menu" role="menu" aria-label="日志文本操作" style={{ left: Math.max(4, Math.min(contextMenu.x, window.innerWidth - 244)), top: Math.max(4, Math.min(contextMenu.y, window.innerHeight - 208)) }} onPointerDown={e => e.preventDefault()}>
       <div className="context-selection" title={contextMenu.text}>{contextMenu.text}</div>
       <button role="menuitem" onClick={() => highlightWord(contextMenu.text)}>高亮所有该字符串</button>
@@ -951,4 +1007,39 @@ function App() {
     </div>}
   </div>;
 }
-createRoot(document.getElementById('root')!).render(<App />);
+function Workspace() {
+  const [sidebars, setSidebars] = useState(() => {
+    try { const saved = JSON.parse(localStorage.getItem('viewer-sidebars') || '{}'); return { left: saved.left === true, right: saved.right === true }; }
+    catch { return { left: false, right: false }; }
+  });
+  function toggleSidebar(side: 'left' | 'right') {
+    setSidebars(previous => {
+      const next = { ...previous, [side]: !previous[side] };
+      try { localStorage.setItem('viewer-sidebars', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+  const [tabs, setTabs] = useState<{ id: string; title: string; seed?: SessionSeed }[]>([{ id: 'default', title: '日志查看' }]);
+  const [active, setActive] = useState('default');
+  const occupied = useRef(new Set<string>());
+  function beforeConnect(id: string, seed: SessionSeed) {
+    if (seed.kind === 'log') {
+      if (id === 'default') return false;
+      setTabs(previous => previous.map(tab => tab.id === 'default' ? { ...tab, seed } : tab));
+      setActive('default'); return true;
+    }
+    if (id !== 'default' && !occupied.current.has(id)) { occupied.current.add(id); return false; }
+    const next = crypto.randomUUID();
+    const title = seed.kind === 'ssh' ? `SSH · ${seed.profile.name || seed.profile.host}` : `Telnet · ${seed.terminal.name || seed.terminal.host}`;
+    setTabs(previous => [...previous, { id: next, title, seed }]); setActive(next); return true;
+  }
+  async function closeTab(id: string) {
+    if (id === 'default') return;
+    try { await window.viewer.sessionClose(id); } catch (error) { console.error(error); return; }
+    setTabs(previous => { const index = previous.findIndex(tab => tab.id === id); const next = previous.filter(tab => tab.id !== id); if (!next.length) next.push({ id: crypto.randomUUID(), title: '日志查看' }); if (active === id) setActive(next[Math.min(index, next.length - 1)].id); return next; });
+    occupied.current.delete(id);
+  }
+  const tabBar = <nav className="workspace-tabs" role="tablist" aria-label="会话标签页">{tabs.map(tab => <div key={tab.id} className={`workspace-tab ${active === tab.id ? 'active' : ''}`}><button role="tab" aria-selected={active === tab.id} onClick={() => setActive(tab.id)}>{tab.title}</button>{tab.id !== 'default' && <button aria-label={`关闭 ${tab.title}`} onClick={() => void closeTab(tab.id)}>×</button>}</div>)}</nav>;
+  return <>{tabs.map(tab => <SessionContext.Provider key={tab.id} value={{ id: tab.id, active: active === tab.id, leftCollapsed: sidebars.left, rightCollapsed: sidebars.right, toggleLeft: () => toggleSidebar('left'), toggleRight: () => toggleSidebar('right'), tabBar, beforeConnect: seed => beforeConnect(tab.id, seed), title: title => setTabs(previous => previous.map(item => item.id === tab.id && item.id !== 'default' ? { ...item, title } : item)) }}><div className="session-workspace" style={{ display: active === tab.id ? undefined : 'none' }}><App seed={tab.seed} /></div></SessionContext.Provider>)}</>;
+}
+createRoot(document.getElementById('root')!).render(<Workspace />);

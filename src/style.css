@@ -101,6 +101,12 @@ small,.hint{color:var(--muted)}
 .connected{color:var(--success)}
 .header-actions{margin-left:auto;display:flex;gap:8px}
 .workspace{flex:1;display:flex;min-height:0}
+.workspace.left-collapsed>.left-panel,.workspace.right-collapsed>.downloads-panel{display:none!important}
+.sidebar-toggle{flex:0 0 18px;width:18px;padding:0;border:0;border-radius:0;background:var(--panel);color:var(--muted);font-size:20px;display:flex;align-items:center;justify-content:center;transition:none}
+.sidebar-toggle-left{border-right:1px solid var(--border)}
+.sidebar-toggle-right{border-left:1px solid var(--border)}
+.sidebar-toggle:hover:not(:disabled),.sidebar-toggle:active:not(:disabled){transform:none;box-shadow:none;background:var(--hover);color:var(--text)}
+.sidebar-toggle:focus-visible{outline-offset:-2px}
 .left-panel{width:282px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);padding:12px 13px 12px;display:flex;flex-direction:column;min-height:0}
 .panel-title{display:flex;align-items:center;justify-content:space-between;font-weight:600;margin:0 0 12px}
 .panel-title span{color:var(--muted);font-size:10px;letter-spacing:1px}
@@ -120,6 +126,12 @@ small,.hint{color:var(--muted)}
 .files-title{margin-top:14px;margin-bottom:8px}
 .files-title button{padding:3px 8px}
 .path-bar{display:flex;gap:5px}
+.path-bar .favorite-path-toggle{padding:3px 6px;font-size:16px;line-height:1;color:var(--accent-text)}
+.favorite-paths{margin-top:6px;font-size:11px;width:100%;min-width:0;text-overflow:ellipsis}
+.new-command-group-dialog label.log-level-preset-toggle{display:flex;align-items:center;gap:8px;margin-top:18px}
+.new-command-group-dialog .log-level-preset-toggle input{width:auto;min-height:0;margin:0}
+.log-level-preset-fields{display:flex;flex-direction:column;gap:12px;margin-top:16px}
+.log-level-preset-fields label{display:flex;flex-direction:column;gap:5px}
 .path-bar input{width:0;flex:1;font-family:monospace;font-size:11px}
 .path-bar button{padding:5px 7px}
 .file-list{flex:1;overflow:auto;margin-top:8px;min-height:70px}
@@ -240,6 +252,9 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .search-scope label{display:flex;align-items:center;gap:8px;white-space:nowrap}
 .search-scope select{width:240px;font-size:11px;padding:4px 7px}
 .search-scope small{font-size:10px}
+.search-scope .scope-highlight{margin-left:auto}
+.search-scope .scope-highlight input{width:155px;font-size:11px;padding:5px 7px}
+.search-scope .toolbar-right{margin-left:0}
 
 .jump-controls{display:flex;align-items:center;justify-content:space-between;gap:6px}
 .connection-form .jump-controls label{display:flex;flex-direction:row;gap:5px;align-items:center;color:var(--text)}
@@ -280,7 +295,8 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .download-tree-file span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .download-tree-file span:first-child{color:var(--muted)}
 .download-tree-file.active{background:var(--selected);border-color:var(--accent-text)}
-@media(max-width:1150px){.downloads-panel{width:220px}.search-scope{flex-wrap:wrap}.log-toolbar{flex-wrap:wrap;gap:6px}}
+@media(max-width:1150px){.downloads-panel{width:220px}.search-scope{flex-wrap:nowrap}.search-scope>small{display:none}.log-toolbar{flex-wrap:wrap;gap:6px}}
+@container (max-width:1100px){.search-scope>small{display:none}}
 
 .local-picker { width: min(760px, 90vw); }
 .local-picker .file-list { height: min(50vh, 440px); overflow: auto; }
@@ -366,7 +382,7 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .telnet-output { position: relative; padding: 0; }
 .telnet-terminal-host { position: absolute; inset: 16px 16px 32px; overflow: hidden; }
 
-.log-view-section { display: flex; flex-direction: column; flex: 1; min-height: 120px; overflow: hidden; }
+.log-view-section { display: flex; flex-direction: column; flex: 1; min-height: 120px; overflow: hidden; container-type: inline-size; }
 .main-panel > .embedded-telnet { flex: 0 0 46%; min-height: 300px; border-top: 2px solid var(--border, #cbd5e1); overflow: hidden; }
 
 /* One shared display region, with connection controls above and commands below. */
@@ -667,3 +683,18 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 /* Keep terminal portals mounted without reserving footer space in log mode. */
 .unified-terminal.show-log > .embedded-telnet{display:contents}
 .unified-terminal.show-log .embedded-telnet .telnet-page{display:contents}
+
+/* Each mounted workspace owns its state; inactive sessions keep receiving output. */
+.session-workspace{height:100%;min-height:0}
+.workspace-tabs{height:52px;display:flex;align-items:stretch;gap:0;overflow-x:auto;background:var(--panel);border-bottom:1px solid var(--border)}
+.workspace-tab{display:flex;align-items:center;flex-shrink:0;border-right:1px solid var(--border);border-bottom:2px solid transparent}
+.workspace-tab.active{background:var(--selected);border-bottom-color:var(--accent)}
+.workspace-tab button{background:transparent;border:0;border-radius:0;white-space:nowrap;font-size:12px;padding:8px 12px;transition:none}
+.workspace-tab button:hover:not(:disabled),.workspace-tab button:active:not(:disabled){transform:none;box-shadow:none;background:transparent}
+.workspace-tab:not(.active):hover{background:var(--hover)}
+.workspace-tab button:focus-visible{outline-offset:-3px}
+.workspace-tab button[role=tab]{max-width:240px;overflow:hidden;text-overflow:ellipsis}
+.workspace-tab button:last-child{padding:8px}
+.session-document-bar{padding:0}
+.session-document-bar .workspace-tabs{position:static;flex:1;min-width:0;height:100%;border-bottom:0}
+.session-document-meta{flex-shrink:0;font-size:11px;color:var(--muted);padding-right:12px}

@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { connectSession } = require('./ssh-session.cjs');
-let sshSession, sshAttempt;
+
 const { Worker } = require('node:worker_threads');
 const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
@@ -36,8 +36,41 @@ if (process.env.VIEWER_DATA_DIR) {
   app.setPath('userData', process.env.VIEWER_DATA_DIR);
 }
 
-let win, config, configPath, cacheRoot, connection, sftp, connectionName, connectionHost, connectionOrigin, document, followTimer, credentials;
-let followBusy = false, quitting = false;
+let win, config, configPath, cacheRoot, credentials;
+const { AsyncLocalStorage } = require('node:async_hooks');
+const sessionContext = new AsyncLocalStorage();
+const sessionRuntimes = new Map();
+let quitting = false;
+function runtime() { return sessionContext.getStore() || getSessionRuntime('default'); }
+function bindSessionCallbacks(options) {
+  const value = runtime();
+  return Object.fromEntries(Object.entries(options).map(([key, item]) => [key, typeof item === 'function' ? (...args) => sessionContext.run(value, () => item(...args)) : item]));
+}
+function getSessionRuntime(id) {
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new Error('会话标识无效');
+  let value = sessionRuntimes.get(id);
+  if (!value) {
+    value = { id, tasks: new Map(), extractedFiles: new Set(), localRoots: new Set(), telnetSetups: new Set(), followBusy: false,
+      disconnectWork: Promise.resolve(), telnetOutputQueue: Promise.resolve(), telnetConnectionLogQueue: Promise.resolve(), telnetOutputHost: '', telnetConnectionContext: '', webTelnetActive: false };
+    for (const file of [...(config?.localCopies || []).flatMap(item => item.paths || []), ...(config?.localExtractions || []).flatMap(item => item.paths || []), ...(config?.lastLocalPaths || [])]) value.extractedFiles.add(file);
+    sessionRuntimes.set(id, value);
+    sessionContext.run(value, () => {
+      const emit = data => sessionContext.run(value, () => telnetEmit(data));
+      value.telnet = require('./telnet.cjs').createTelnet(emit);
+      value.webTelnet = require('./web-telnet.cjs').createWebTelnet(emit);
+      value.terminalModes = require('./terminal-mode.cjs').createTerminalMode();
+      value.sshTerminal = require('./ssh-terminal.cjs').createSshTerminal({
+        getClient: () => value.connection,
+        getTarget: () => value.connectionOrigin?.tag || value.connectionHost || value.connectionName,
+        getRoot: () => config.directories.download,
+        getLogMode: () => config.sshLogMode || 'printable',
+        emit: data => sessionContext.run(value, () => event(data)),
+        onLogFile: file => sessionContext.run(value, () => { value.extractedFiles.add(file); event({ type: 'local-files-changed' }); }),
+      });
+    });
+  }
+  return value;
+}
 let updater, updateTimer, updateInterval;
 function updateSnapshot() { return { ...updater.state(), autoCheck: config.autoCheckUpdates !== false }; }
 function scheduleUpdateChecks() {
@@ -48,17 +81,15 @@ function scheduleUpdateChecks() {
   updateInterval = setInterval(check, 6 * 60 * 60 * 1000);
   updateTimer.unref?.(); updateInterval.unref?.();
 }
-const tasks = new Map();
+
 const glob = import('../shared/glob.mjs');
 const logFont = import('../shared/log-font.mjs');
-let batchSearch;
-const extractedFiles = new Set();
-const localRoots = new Set();
+
 const core = import('./log-core.mjs');
-const event = data => { if (win && !win.isDestroyed()) win.webContents.send('viewer-event', data); };
+const event = data => { if (win && !win.isDestroyed()) win.webContents.send('viewer-event', { ...data, ...(sessionContext.getStore() ? { sessionId: runtime().id } : {}) }); };
 const callSftp = (method, ...args) => new Promise((resolve, reject) => {
-  if (!sftp) return reject(new Error('请先连接 SSH'));
-  sftp[method](...args, (error, result) => error ? reject(error) : resolve(result));
+  if (!runtime().sftp) return reject(new Error('请先连接 SSH'));
+  runtime().sftp[method](...args, (error, result) => error ? reject(error) : resolve(result));
 });
 async function persist() {
   const temporary = `${configPath}.tmp`;
@@ -81,11 +112,11 @@ function taskWorker(kind, data, progress) {
   });
   return { worker, promise };
 }
-function stopFollow() { clearInterval(followTimer); followTimer = undefined; }
+function stopFollow() { clearInterval(runtime().followTimer); runtime().followTimer = undefined; }
 function closeDocument() {
   stopFollow();
-  if (!document) return;
-  const previous = document;
+  if (!runtime().document) return;
+  const previous = runtime().document;
   previous.controller.abort();
   const stopping = [previous.indexWorker?.terminate(), previous.searchWorker?.terminate()];
   if (previous.remote || previous.gzip) {
@@ -94,24 +125,24 @@ function closeDocument() {
       await fsp.rm(path.join(cacheRoot, previous.id + '.gz'), { force: true });
     }).catch(() => {});
   }
-  document = undefined;
+  runtime().document = undefined;
 }
-let disconnectWork = Promise.resolve();
+
 function disconnect({ releasePort = false } = {}) {
-  sshTerminal.close();
-  batchSearch?.controller.abort(); batchSearch?.worker?.terminate(); batchSearch = undefined;
+  runtime().sshTerminal.close();
+  runtime().batchSearch?.controller.abort(); runtime().batchSearch?.worker?.terminate(); runtime().batchSearch = undefined;
   closeDocument();
-  for (const task of tasks.values()) task.abort();
-  const attempt = sshAttempt; sshAttempt = undefined;
-  const previous = sshSession; const client = connection; sshSession = undefined; connection = undefined; sftp = undefined; connectionHost = undefined;
+  for (const task of runtime().tasks.values()) task.abort();
+  const attempt = runtime().sshAttempt; runtime().sshAttempt = undefined;
+  const previous = runtime().sshSession; const client = runtime().connection; runtime().sshSession = undefined; runtime().connection = undefined; runtime().sftp = undefined; runtime().connectionHost = undefined;
   const close = () => { attempt?.abort(); previous?.close(); if (!previous) client?.destroy(); };
   if (releasePort && previous) {
-    const work = disconnectWork.then(() => previous.releaseJumpPort()).finally(close);
-    disconnectWork = work.then(() => undefined, () => undefined);
+    const work = runtime().disconnectWork.then(() => previous.releaseJumpPort()).finally(close);
+    runtime().disconnectWork = work.then(() => undefined, () => undefined);
     return work;
   }
   close();
-  return disconnectWork;
+  return runtime().disconnectWork;
 }
 async function namedJump(profile) {
   if (!profile.jumpName) return profile;
@@ -125,14 +156,14 @@ async function namedJump(profile) {
 async function connect(profile) {
   await disconnect();
   profile = await namedJump(profile);
-  const controller = new AbortController(); sshAttempt = controller;
+  const controller = new AbortController(); runtime().sshAttempt = controller;
   let own;
   try {
-    own = await connectSession(profile, {
+    own = await connectSession(profile, bindSessionCallbacks({
       signal: controller.signal,
       report: message => event({ type: 'connection-progress', message }),
-      onError: error => { if (connection === own?.client) event({ type: 'connection-error', error }); },
-      onClose: () => { if (own && connection === own.client) { disconnect(); event({ type: 'disconnected' }); } },
+      onError: error => { if (runtime().connection === own?.client) event({ type: 'connection-error', error }); },
+      onClose: () => { if (own && runtime().connection === own.client) { disconnect(); event({ type: 'disconnected' }); } },
       verify: (identity, role, fingerprint, callback) => {
         const known = config.hosts[identity];
         if (known === fingerprint) { callback(!controller.signal.aborted); return; }
@@ -159,27 +190,27 @@ async function connect(profile) {
           }
         }).catch(() => callback(false));
       },
-    });
+    }));
     if (controller.signal.aborted) throw new Error('连接已取消');
-    sshSession = own; connection = own.client; sftp = own.sftp;
-    connectionName = `${profile.username}@${own.identity}`;
-    connectionHost = profile.host;
-    connectionOrigin = { ...sourceIdentity(profile), host: archiveOwner(profile), owner: connectionName };
+    runtime().sshSession = own; runtime().connection = own.client; runtime().sftp = own.sftp;
+    runtime().connectionName = `${profile.username}@${own.identity}`;
+    runtime().connectionHost = profile.host;
+    runtime().connectionOrigin = { ...sourceIdentity(profile), host: archiveOwner(profile), owner: runtime().connectionName };
     const home = await callSftp('realpath', '.');
     if (controller.signal.aborted) throw new Error('连接已取消');
-    return { name: connectionName, home };
-  } catch (error) { own?.close(); if (sshAttempt === controller) disconnect(); throw error; }
+    return { name: runtime().connectionName, home };
+  } catch (error) { own?.close(); if (runtime().sshAttempt === controller) disconnect(); throw error; }
 }
 
 function summary(doc) {
   const copy = (config.localCopies || []).find(item => item.paths?.includes(doc.name));
   const archive = (config.localExtractions || []).find(item => item.paths?.includes(doc.name))?.source;
-  const origin = doc.remote ? connectionOrigin?.label : copy?.origin || copy?.owner;
+  const origin = doc.remote ? runtime().connectionOrigin?.label : copy?.origin || copy?.owner;
   return { id: doc.id, name: doc.name, origin, archive, remote: Boolean(doc.remote), compressed: doc.gzip, size: doc.size, ready: Boolean(doc.index), lines: doc.index?.lines || 0, bookmarkKey: doc.bookmarkKey, bookmarks: config.bookmarks[doc.bookmarkKey] || [] };
 }
 async function prefixHash(doc) {
   if (!doc.prefixLength) return '';
-  const input = doc.remote ? remoteSource(sftp, doc.remote, 0, doc.prefixLength, doc.controller.signal)
+  const input = doc.remote ? remoteSource(runtime().sftp, doc.remote, 0, doc.prefixLength, doc.controller.signal)
     : fs.createReadStream(doc.file, { start: 0, end: doc.prefixLength - 1 });
   const hash = crypto.createHash('sha256');
   for await (const chunk of input) hash.update(chunk);
@@ -189,7 +220,7 @@ async function indexDocument(doc) {
   const job = taskWorker('index', { file: doc.file }, progress => event({ type: 'index-progress', id: doc.id, ...progress }));
   doc.indexWorker = job.worker;
   const index = await job.promise;
-  if (document !== doc) return;
+  if (runtime().document !== doc) return;
   doc.index = index; doc.size = index.size;
   event({ type: 'ready', ...summary(doc) });
 }
@@ -216,16 +247,16 @@ async function openFile(remotePath, localPath) {
     size: attrs.size, mtime: remote ? attrs.mtime : attrs.mtimeMs,
     controller: new AbortController(), sourceSize: attrs.size,
     prefixLength: Math.min(attrs.size, 256), inode: remote ? undefined : attrs.ino,
-    bookmarkKey: `${remote ? connectionName : 'local'}:${source}:${attrs.size}:${remote ? attrs.mtime : attrs.mtimeMs}`,
+    bookmarkKey: `${remote ? runtime().connectionName : 'local'}:${source}:${attrs.size}:${remote ? attrs.mtime : attrs.mtimeMs}`,
   };
   doc.file = remote || gzip ? path.join(cacheRoot, doc.id + '.log') : localPath;
-  document = doc;
+  runtime().document = doc;
   if (!gzip) doc.prefix = await prefixHash(doc);
   let preview = [];
   if (!gzip && attrs.size) {
     const start = 0;
     const previewEnd = Math.min(attrs.size, 256 * 1024);
-    const input = remote ? remoteSource(sftp, source, start, previewEnd, doc.controller.signal) : fs.createReadStream(source, { start, end: previewEnd - 1 });
+    const input = remote ? remoteSource(runtime().sftp, source, start, previewEnd, doc.controller.signal) : fs.createReadStream(source, { start, end: previewEnd - 1 });
     const chunks = [];
     for await (const chunk of input) chunks.push(chunk);
     let buffer = Buffer.concat(chunks);
@@ -239,7 +270,7 @@ async function openFile(remotePath, localPath) {
       if (doc.controller.signal.aborted) return;
       if (remote || gzip) {
         const rawFile = gzip ? path.join(cacheRoot, doc.id + '.gz') : doc.file;
-        const input = remote ? remoteSource(sftp, source, 0, attrs.size, doc.controller.signal) : fs.createReadStream(source);
+        const input = remote ? remoteSource(runtime().sftp, source, 0, attrs.size, doc.controller.signal) : fs.createReadStream(source);
         await copyStream(input, rawFile, attrs.size, doc.controller.signal, data => event({ type: 'cache-progress', id: doc.id, ...data }));
         if (gzip) {
           const unpack = fs.createReadStream(rawFile);
@@ -256,7 +287,7 @@ async function openFile(remotePath, localPath) {
         }
       }
       await indexDocument(doc);
-    } catch (error) { if (document === doc) event({ type: 'document-error', id: doc.id, error: error.message }); }
+    } catch (error) { if (runtime().document === doc) event({ type: 'document-error', id: doc.id, error: error.message }); }
   })(); });
   return { ...summary(doc), preview };
 }
@@ -264,11 +295,11 @@ async function openFile(remotePath, localPath) {
 function registerLocalExtraction(source, paths) {
   config.localExtractions = [...(config.localExtractions || []).filter(item => !item.paths.some(file => paths.includes(file))), { source, paths }].slice(-1000);
 }
-async function rememberLocal(remote, paths, owner = connectionName) {
-  for (const file of paths) extractedFiles.add(file);
+async function rememberLocal(remote, paths, owner = runtime().connectionName) {
+  for (const file of paths) runtime().extractedFiles.add(file);
   if (remote) {
     config.localCopies ||= [];
-    const origin = connectionOrigin?.owner === owner ? connectionOrigin.label : owner;
+    const origin = runtime().connectionOrigin?.owner === owner ? runtime().connectionOrigin.label : owner;
     config.localCopies = [...config.localCopies.filter(item => !(item.owner === owner && item.remote === remote)), { owner, origin, remote, paths }];
   }
   config.lastLocalPaths = paths; await save();
@@ -277,7 +308,7 @@ async function rememberLocal(remote, paths, owner = connectionName) {
 async function localCopyPaths(matches) {
   const paths = [];
   for (const item of config.localCopies || []) {
-    if (item.owner !== connectionName || !matches(path.posix.normalize(item.remote))) continue;
+    if (item.owner !== runtime().connectionName || !matches(path.posix.normalize(item.remote))) continue;
     for (const file of item.paths || []) {
       try { if ((await fsp.stat(file)).isFile()) paths.push(file); } catch {}
     }
@@ -286,7 +317,7 @@ async function localCopyPaths(matches) {
 }
 async function authorizedLocalPath(file) {
   const resolved = await fsp.realpath(file);
-  const root = [...localRoots].find(root => {
+  const root = [...runtime().localRoots].find(root => {
     const relative = path.relative(root, resolved);
     return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
   });
@@ -301,7 +332,7 @@ async function listLocalDirectory(directory) {
     if (!item.isFile() && !item.isDirectory()) continue;
     try {
       const file = path.join(resolved, item.name), attrs = await fsp.stat(file);
-      if (item.isFile()) extractedFiles.add(file);
+      if (item.isFile()) runtime().extractedFiles.add(file);
       entries.push({ name: item.name, directory: item.isDirectory(), size: attrs.size, mtime: attrs.mtimeMs / 1000 });
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -333,8 +364,8 @@ function compressRemote(client, file, destination, signal) {
 
 async function downloadInto(file, folder, signal, report) {
   const downloadedAt = new Date();
-  const owner = connectionName;
-  const origin = connectionOrigin;
+  const owner = runtime().connectionName;
+  const origin = runtime().connectionOrigin;
   const downloadRoot = folder;
   const attrs = await callSftp('stat', file);
   const compressedSource = /\.(?:gz|zip|tgz|tar|tar\.gz)$/i.test(file);
@@ -343,7 +374,7 @@ async function downloadInto(file, folder, signal, report) {
   folder = path.dirname(destination);
   await fsp.mkdir(folder, { recursive: true, mode: 0o700 });
   const temporary = path.join(folder, '.part-' + crypto.randomUUID());
-  const client = connection, transfer = sftp;
+  const client = runtime().connection, transfer = runtime().sftp;
   const remoteArchive = compressedSource ? null : '/tmp/ssh-log-viewer-' + crypto.randomUUID() + '.gz';
   try {
     if (remoteArchive) {
@@ -371,22 +402,22 @@ async function downloadInto(file, folder, signal, report) {
 }
 
 async function runTask(kind, work, origin) {
-  if (tasks.size) throw new Error('已有文件传输或解压任务，请等待完成或取消');
+  if (runtime().tasks.size) throw new Error('已有文件传输或解压任务，请等待完成或取消');
   const id = crypto.randomUUID(), controller = new AbortController();
-  tasks.set(id, controller);
+  runtime().tasks.set(id, controller);
   event({ type: 'task', id, kind, origin, state: 'running' });
   try {
     const result = await work(controller.signal, data => event({ type: 'task', id, kind, state: 'running', ...data }));
     event({ type: 'task', id, kind, state: controller.signal.aborted ? 'cancelled' : 'done', ...result }); return result;
   } catch (error) {
     event({ type: 'task', id, kind, state: controller.signal.aborted ? 'cancelled' : 'error', error: error.message }); throw error;
-  } finally { tasks.delete(id); }
+  } finally { runtime().tasks.delete(id); }
 }
 function prioritizeOpenFile(files, filePath, remote = false) {
-  if (!document) return files;
-  let current = document.name;
-  if (remote && !document.remote) current = (config.localCopies || []).find(item => item.owner === connectionName && item.paths?.includes(current))?.remote;
-  if (!current || (!remote && document.remote)) return files;
+  if (!runtime().document) return files;
+  let current = runtime().document.name;
+  if (remote && !runtime().document.remote) current = (config.localCopies || []).find(item => item.owner === runtime().connectionName && item.paths?.includes(current))?.remote;
+  if (!current || (!remote && runtime().document.remote)) return files;
   const normalize = remote ? path.posix.normalize : path.resolve;
   const index = files.findIndex(file => normalize(filePath(file)) === normalize(current));
   if (index > 0) files.unshift(...files.splice(index, 1));
@@ -420,12 +451,12 @@ async function createSearchExportReader(data) {
     if (!remote && !compressed) return source;
     const destination = path.join(temporary, crypto.randomUUID() + '.log');
     if (remote) {
-      if (!sftp) throw new Error('SSH 连接已断开，无法导出完整原始日志');
+      if (!runtime().sftp) throw new Error('SSH 连接已断开，无法导出完整原始日志');
       const attrs = await callSftp('stat', source);
       if (compressed) {
-        await pipeline(remoteSource(sftp, source, 0, attrs.size), zlib.createGunzip(), fs.createWriteStream(destination, { flags: 'wx', mode: 0o600 }));
+        await pipeline(remoteSource(runtime().sftp, source, 0, attrs.size), zlib.createGunzip(), fs.createWriteStream(destination, { flags: 'wx', mode: 0o600 }));
       } else {
-        await copyStream(remoteSource(sftp, source, 0, attrs.size), destination, attrs.size, undefined, () => {});
+        await copyStream(remoteSource(runtime().sftp, source, 0, attrs.size), destination, attrs.size, undefined, () => {});
       }
       const after = await callSftp('stat', source);
       if (after.size !== attrs.size || after.mtime !== attrs.mtime) throw new Error('原始日志在导出过程中发生变化，请重新搜索后再导出');
@@ -449,10 +480,10 @@ async function createSearchExportReader(data) {
   };
 }
 async function follow() {
-  const doc = document;
+  const doc = runtime().document;
   if (!doc?.index || doc.gzip) throw new Error('请等待缓存完成；压缩日志不支持实时跟随');
-  if (followBusy) return;
-  followBusy = true;
+  if (runtime().followBusy) return;
+  runtime().followBusy = true;
   try {
     const attrs = doc.remote ? await callSftp('stat', doc.remote) : await fsp.stat(doc.file);
     const mtime = doc.remote ? attrs.mtime : attrs.mtimeMs;
@@ -461,37 +492,33 @@ async function follow() {
     }
     if (attrs.size === doc.sourceSize) return;
     if (doc.remote) {
-      await pipeline(remoteSource(sftp, doc.remote, doc.sourceSize, attrs.size, doc.controller.signal), fs.createWriteStream(doc.file, { flags: 'a' }), { signal: doc.controller.signal });
+      await pipeline(remoteSource(runtime().sftp, doc.remote, doc.sourceSize, attrs.size, doc.controller.signal), fs.createWriteStream(doc.file, { flags: 'a' }), { signal: doc.controller.signal });
     }
     doc.sourceSize = attrs.size; doc.mtime = mtime;
     await indexDocument(doc);
-  } catch (error) { if (document === doc) { stopFollow(); event({ type: 'document-error', id: doc.id, error: error.message }); } }
-  finally { followBusy = false; }
+  } catch (error) { if (runtime().document === doc) { stopFollow(); event({ type: 'document-error', id: doc.id, error: error.message }); } }
+  finally { runtime().followBusy = false; }
 }
 
-let telnetOutputFile, telnetOutputHost = '', telnetOutputQueue = Promise.resolve();
-let telnetConnectionLogQueue = Promise.resolve();
-let telnetConnectionContext = '';
-const telnetSetups = new Set();
 async function startTelnetOutput(target, token) {
-  await telnetOutputQueue;
-  terminalModes.check(token);
-  telnetOutputFile = undefined;
+  await runtime().telnetOutputQueue;
+  runtime().terminalModes.check(token);
+  runtime().telnetOutputFile = undefined;
   const setup = require('./telnet-log.cjs').createTelnetLog(config.directories.download, target);
-  telnetSetups.add(setup);
+  runtime().telnetSetups.add(setup);
   let file;
-  try { file = await setup; } finally { telnetSetups.delete(setup); }
-  extractedFiles.add(file);
+  try { file = await setup; } finally { runtime().telnetSetups.delete(setup); }
+  runtime().extractedFiles.add(file);
   event({ type: 'local-files-changed' });
-  terminalModes.check(token);
-  telnetOutputHost = terminalLogTarget(target);
-  telnetOutputFile = file;
+  runtime().terminalModes.check(token);
+  runtime().telnetOutputHost = terminalLogTarget(target);
+  runtime().telnetOutputFile = file;
 }
 function logTelnetConnection(message) {
-  const line = `${new Date().toISOString()} ${telnetConnectionContext ? `[${telnetConnectionContext}] ` : ''}${message}\n`;
+  const line = `${new Date().toISOString()} ${runtime().telnetConnectionContext ? `[${runtime().telnetConnectionContext}] ` : ''}${message}\n`;
   try {
     const directory = app.getPath('logs');
-    telnetConnectionLogQueue = telnetConnectionLogQueue
+    runtime().telnetConnectionLogQueue = runtime().telnetConnectionLogQueue
       .then(() => fsp.mkdir(directory, { recursive: true, mode: 0o700 }))
       .then(() => fsp.appendFile(path.join(directory, 'telnet-connection.log'), line, { mode: 0o600 }))
       .catch(() => {});
@@ -500,28 +527,37 @@ function logTelnetConnection(message) {
 const telnetEmit = data => {
   if (data.type === 'telnet-status') logTelnetConnection(data.message || '状态未知');
   if (data.type === 'telnet-connection-log') logTelnetConnection(data.message || '连接诊断信息未知');
-  if (data.type === 'telnet-data' && telnetOutputFile && config.telnetLogMode !== 'none') {
-    const file = telnetOutputFile;
+  if (data.type === 'telnet-data' && runtime().telnetOutputFile && config.telnetLogMode !== 'none') {
+    const file = runtime().telnetOutputFile;
     let text = data.message;
     if ((config.telnetLogMode || 'printable') === 'printable') text = require('node:util').stripVTControlCharacters(text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
-    telnetOutputQueue = telnetOutputQueue.then(() => fsp.appendFile(file, text, { mode: 0o600 })).catch(error => event({ type: 'telnet-status', message: '日志写入失败：' + error.message }));
+    runtime().telnetOutputQueue = runtime().telnetOutputQueue.then(() => fsp.appendFile(file, text, { mode: 0o600 })).catch(error => event({ type: 'telnet-status', message: '日志写入失败：' + error.message }));
   }
   event(data);
 };
-const telnet = require('./telnet.cjs').createTelnet(telnetEmit);
-const webTelnet = require('./web-telnet.cjs').createWebTelnet(telnetEmit);
-let webTelnetActive = false, webLoginSession;
-const sshTerminal = require('./ssh-terminal.cjs').createSshTerminal({
-  getClient: () => connection,
-  getTarget: () => connectionOrigin?.tag || connectionHost || connectionName,
-  getRoot: () => config.directories.download,
-  getLogMode: () => config.sshLogMode || 'printable',
-  emit: event,
-  onLogFile: file => { extractedFiles.add(file); event({ type: 'local-files-changed' }); },
-});
-const terminalModes = require('./terminal-mode.cjs').createTerminalMode();
+
 const webPasswordId = (address, username) => 'web-telnet-' + crypto.createHash('sha256').update(JSON.stringify([require('./web-telnet.cjs').normalizeWebAddress(address), username.trim()])).digest('hex');
 const handlers = {
+  sessionInvoke: (id, method, args) => {
+    if (!Object.hasOwn(handlers, method) || method === 'sessionInvoke' || method === 'sessionClose' || !Array.isArray(args)) throw new Error('会话操作无效');
+    const value = getSessionRuntime(id);
+    if (value.closing) throw new Error('会话正在关闭');
+    return sessionContext.run(value, () => handlers[method](...args));
+  },
+  sessionClose: async id => {
+    const value = sessionRuntimes.get(id);
+    if (!value) return;
+    if (!value.closeWork) {
+      value.closing = true;
+      value.closeWork = sessionContext.run(value, async () => {
+        value.terminalModes.cancel(); value.telnet.close(); value.webTelnet.close();
+        const pending = [...value.telnetSetups];
+        await Promise.allSettled([disconnect({ releasePort: true }), value.telnetOutputQueue, value.telnetConnectionLogQueue, ...pending, value.sshTerminal.drain()]);
+        sessionRuntimes.delete(id);
+      });
+    }
+    await value.closeWork;
+  },
   updateState: () => updateSnapshot(),
   checkForUpdates: async () => { await updater.check(); return updateSnapshot(); },
   downloadUpdate: async () => { await updater.download(); return updateSnapshot(); },
@@ -536,32 +572,32 @@ const handlers = {
     const update = updateSnapshot(); event({ type: 'update-state', update });
     return update;
   },
-  terminalMode: mode => terminalModes.select(mode),
-  sshTerminalOpen: (cols, rows) => { terminalModes.select('ssh'); return sshTerminal.open(cols, rows); },
-  sshTerminalWrite: text => sshTerminal.write(text),
-  sshTerminalResize: (cols, rows) => sshTerminal.resize(cols, rows),
-  sshTerminalClose: () => sshTerminal.close(),
+  terminalMode: mode => runtime().terminalModes.select(mode),
+  sshTerminalOpen: (cols, rows) => { runtime().terminalModes.select('ssh'); return runtime().sshTerminal.open(cols, rows); },
+  sshTerminalWrite: text => runtime().sshTerminal.write(text),
+  sshTerminalResize: (cols, rows) => runtime().sshTerminal.resize(cols, rows),
+  sshTerminalClose: () => runtime().sshTerminal.close(),
   sshTerminalRecording: async (mode, append) => {
     if (!['none', 'printable', 'all'].includes(mode)) throw new Error('日志类型无效');
     config.sshLogMode = mode;
-    const overwrite = mode !== 'none' && !append ? sshTerminal.overwrite() : Promise.resolve();
+    const overwrite = mode !== 'none' && !append ? runtime().sshTerminal.overwrite() : Promise.resolve();
     await Promise.all([save(), overwrite]);
     event({ type: 'local-files-changed' });
-    return mode === 'none' ? null : sshTerminal.outputFile || null;
+    return mode === 'none' ? null : runtime().sshTerminal.outputFile || null;
   },
   sshTerminalSaveOutput: async () => {
-    const file = sshTerminal.outputFile;
+    const file = runtime().sshTerminal.outputFile;
     if (!file) throw new Error('尚无 SSH 命令终端会话输出');
-    const host = terminalLogTarget(sshTerminal.outputTarget);
+    const host = terminalLogTarget(runtime().sshTerminal.outputTarget);
     const chosen = await dialog.showSaveDialog(win, { title: '保存 SSH 终端输出', defaultPath: path.join(app.getPath('downloads'), 'ssh-' + host + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt'), filters: [{ name: '文本日志', extensions: ['txt', 'log'] }] });
     if (chosen.canceled || !chosen.filePath) return null;
-    await sshTerminal.copyOutput(chosen.filePath, file);
+    await runtime().sshTerminal.copyOutput(chosen.filePath, file);
     return chosen.filePath;
   },
   webTelnetSearchDevices: async (address, keyword) => {
     address = require('./web-telnet.cjs').normalizeWebAddress(address);
-    if (!webLoginSession || webLoginSession.address !== address) throw new Error('请先登录当前 Web 服务');
-    return require('./web-telnet.cjs').searchDevices(address, webLoginSession, keyword);
+    if (!runtime().webLoginSession || runtime().webLoginSession.address !== address) throw new Error('请先登录当前 Web 服务');
+    return require('./web-telnet.cjs').searchDevices(address, runtime().webLoginSession, keyword);
   },
   webTelnetPassword: async (address, username, password, remember) => {
     const id = webPasswordId(address, username);
@@ -571,41 +607,41 @@ const handlers = {
   },
   webTelnetLogin: async (address, username, password) => {
     address = require('./web-telnet.cjs').normalizeWebAddress(address);
-    if (!password && webLoginSession?.address === address && webLoginSession.username === username.trim()) return { tenantId: webLoginSession.tenantId };
+    if (!password && runtime().webLoginSession?.address === address && runtime().webLoginSession.username === username.trim()) return { tenantId: runtime().webLoginSession.tenantId };
     if (!password) password = await credentials.get(webPasswordId(address, username));
-    webLoginSession = undefined;
+    runtime().webLoginSession = undefined;
     const login = await require('./web-telnet.cjs').webLogin(address, username, password);
-    webLoginSession = { address: address.replace(/\/$/, ''), username: username.trim(), ...login };
+    runtime().webLoginSession = { address: address.replace(/\/$/, ''), username: username.trim(), ...login };
     return { tenantId: login.tenantId };
   },
   webTelnetConnect: async (address, device, token, identity = {}) => {
-    terminalModes.cancel();
-    const attempt = terminalModes.token();
+    runtime().terminalModes.cancel();
+    const attempt = runtime().terminalModes.token();
     address = require('./web-telnet.cjs').normalizeWebAddress(address);
-    telnetConnectionContext = `web ${address} device=${String(device).replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+    runtime().telnetConnectionContext = `web ${address} device=${String(device).replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     logTelnetConnection('开始连接');
-    telnet.close(); webTelnet.close(); webTelnetActive = true;
+    runtime().telnet.close(); runtime().webTelnet.close(); runtime().webTelnetActive = true;
     await startTelnetOutput(telnetLogTarget({ device, address, name: identity.name, deviceName: identity.deviceName }), attempt);
     if (!token) {
-      if (!webLoginSession || webLoginSession.address !== address.replace(/\/$/, '')) throw new Error('请先登录当前 Web 服务');
-      token = await require('./web-telnet.cjs').getTelnetToken(address, webLoginSession);
+      if (!runtime().webLoginSession || runtime().webLoginSession.address !== address.replace(/\/$/, '')) throw new Error('请先登录当前 Web 服务');
+      token = await require('./web-telnet.cjs').getTelnetToken(address, runtime().webLoginSession);
     }
-    terminalModes.check(attempt);
-    try { return await webTelnet.connect(address, device, token); }
+    runtime().terminalModes.check(attempt);
+    try { return await runtime().webTelnet.connect(address, device, token); }
     catch (error) { logTelnetConnection('连接失败：' + error.message); throw error; }
   },
   telnetConnect: async (host, port, name = '') => {
-    terminalModes.cancel();
-    const attempt = terminalModes.token();
-    telnetConnectionContext = `direct ${String(host).replace(/[^a-zA-Z0-9.-]/g, '_')}:${port}`;
+    runtime().terminalModes.cancel();
+    const attempt = runtime().terminalModes.token();
+    runtime().telnetConnectionContext = `direct ${String(host).replace(/[^a-zA-Z0-9.-]/g, '_')}:${port}`;
     logTelnetConnection('开始连接');
-    webTelnet.close(); webTelnetActive = false;
-    telnet.close();
+    runtime().webTelnet.close(); runtime().webTelnetActive = false;
+    runtime().telnet.close();
     await startTelnetOutput(telnetLogTarget({ host, port, name }), attempt);
     try {
-      terminalModes.check(attempt);
-      await telnet.connect(host, port);
-      terminalModes.check(attempt);
+      runtime().terminalModes.check(attempt);
+      await runtime().telnet.connect(host, port);
+      runtime().terminalModes.check(attempt);
       return true;
     } catch (error) {
       logTelnetConnection('连接失败：' + error.message);
@@ -613,27 +649,27 @@ const handlers = {
     }
   },
   telnetSaveOutput: async () => {
-    if (!telnetOutputFile) throw new Error('尚无 Telnet 会话输出');
-    const file = telnetOutputFile;
-    const chosen = await dialog.showSaveDialog(win, { title: '保存 Telnet 输出', defaultPath: path.join(app.getPath('downloads'), 'telnet-' + telnetOutputHost + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt'), filters: [{ name: '文本日志', extensions: ['txt', 'log'] }] });
+    if (!runtime().telnetOutputFile) throw new Error('尚无 Telnet 会话输出');
+    const file = runtime().telnetOutputFile;
+    const chosen = await dialog.showSaveDialog(win, { title: '保存 Telnet 输出', defaultPath: path.join(app.getPath('downloads'), 'telnet-' + runtime().telnetOutputHost + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt'), filters: [{ name: '文本日志', extensions: ['txt', 'log'] }] });
     if (chosen.canceled || !chosen.filePath) return null;
-    await telnetOutputQueue;
+    await runtime().telnetOutputQueue;
     await fsp.copyFile(file, chosen.filePath);
     return chosen.filePath;
   },
   telnetRecording: async (mode, append) => {
     if (!['none', 'printable', 'all'].includes(mode)) throw new Error('日志类型无效');
-    await telnetOutputQueue;
+    await runtime().telnetOutputQueue;
     config.telnetLogMode = mode;
     await save();
     if (mode === 'none') return null;
     // Applying overwrite only clears the current session, never older sessions.
-    if (telnetOutputFile && !append) await fsp.writeFile(telnetOutputFile, '', { mode: 0o600 });
+    if (runtime().telnetOutputFile && !append) await fsp.writeFile(runtime().telnetOutputFile, '', { mode: 0o600 });
     event({ type: 'local-files-changed' });
-    return telnetOutputFile || null;
+    return runtime().telnetOutputFile || null;
   },
-  telnetWrite: text => webTelnetActive ? webTelnet.write(text) : telnet.write(text),
-  telnetClose: () => { terminalModes.cancel(); telnet.close(); webTelnet.close(); event({ type: 'telnet-status', message: '已断开' }); },
+  telnetWrite: text => runtime().webTelnetActive ? runtime().webTelnet.write(text) : runtime().telnet.write(text),
+  telnetClose: () => { runtime().terminalModes.cancel(); runtime().telnet.close(); runtime().webTelnet.close(); event({ type: 'telnet-status', message: '已断开' }); },
   downloadedFiles: async () => {
     const recorded = new Set([...(config.localCopies || []).flatMap(item => item.paths || []), ...(config.lastLocalPaths || []), ...(config.localExtractions || []).flatMap(item => item.paths || [])]);
     const folders = [config.directories.download, config.directories.extract];
@@ -655,7 +691,7 @@ const handlers = {
     const paths = [...recorded];
     const existing = [];
     for (const file of paths) {
-      try { if ((await fsp.stat(file)).isFile()) { existing.push(file); extractedFiles.add(file); } }
+      try { if ((await fsp.stat(file)).isFile()) { existing.push(file); runtime().extractedFiles.add(file); } }
       catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error; }
     }
     return existing.sort((a, b) => a.localeCompare(b));
@@ -808,7 +844,7 @@ const handlers = {
     if (!chosen.canceled) { config.directories[kind] = chosen.filePaths[0]; await save(); }
     return config.directories;
   },
-  openExtracted: file => { if (!extractedFiles.has(file)) throw new Error('请选择本次解压得到的文件'); return openFile(null, file); },
+  openExtracted: file => { if (!runtime().extractedFiles.has(file)) throw new Error('请选择本次解压得到的文件'); return openFile(null, file); },
   chooseKey: async () => (await dialog.showOpenDialog(win, { title: '选择 SSH 私钥', properties: ['openFile'] })).filePaths[0],
   connect,
   disconnect: async () => {
@@ -844,18 +880,18 @@ const handlers = {
     const resolved = await fsp.realpath(file);
     const attrs = await fsp.stat(resolved);
     if (attrs.isDirectory()) {
-      localRoots.add(resolved);
+      runtime().localRoots.add(resolved);
       return { kind: 'folder', listing: await listLocalDirectory(resolved) };
     }
     if (!attrs.isFile()) throw new Error('请选择文件或文件夹');
-    localRoots.add(path.dirname(resolved));
+    runtime().localRoots.add(path.dirname(resolved));
     return { kind: 'file', path: resolved, listing: await listLocalDirectory(path.dirname(resolved)) };
   },
   chooseLocalFolder: async () => {
     const chosen = await dialog.showOpenDialog(win, { title: '打开本地日志文件夹', properties: ['openDirectory'] });
     if (chosen.canceled) return null;
     const root = await fsp.realpath(chosen.filePaths[0]);
-    localRoots.add(root);
+    runtime().localRoots.add(root);
     return listLocalDirectory(root);
   },
   listLocal: directory => listLocalDirectory(directory),
@@ -875,8 +911,8 @@ const handlers = {
     return chosen.canceled ? null : openFile(null, chosen.filePaths[0]);
   },
   page: async (id, start, count, filterToken) => {
-    if (document?.id !== id || !document.index) throw new Error('文件尚未就绪');
-    const doc = document;
+    if (runtime().document?.id !== id || !runtime().document.index) throw new Error('文件尚未就绪');
+    const doc = runtime().document;
     if (filterToken) {
       if (doc.filter?.token !== filterToken) throw new Error('筛选已失效，请重新筛选');
       return (await core).readFilteredPage(doc.file, doc.filter.positions, Number(start) || 0, Number(count) || 300);
@@ -884,27 +920,27 @@ const handlers = {
     return (await core).readPage(doc.file, doc.index, Number(start) || 0, Number(count) || 300);
   },
   filter: async (id, query, caseSensitive, requestId) => {
-    batchSearch?.controller.abort(); batchSearch?.worker?.terminate(); batchSearch = undefined;
-    if (document?.id !== id || !document.index) throw new Error('请等待全文缓存完成');
+    runtime().batchSearch?.controller.abort(); runtime().batchSearch?.worker?.terminate(); runtime().batchSearch = undefined;
+    if (runtime().document?.id !== id || !runtime().document.index) throw new Error('请等待全文缓存完成');
     stopFollow();
-    const doc = document;
+    const doc = runtime().document;
     doc.searchWorker?.terminate();
     const job = taskWorker('search', { file: doc.file, query, options: { caseSensitive: Boolean(caseSensitive), collectPositions: true } }, data => event({ type: 'filter-progress', id, requestId, ...data }));
     doc.searchWorker = job.worker;
     try {
       const result = await job.promise;
-      if (document !== doc || doc.searchWorker !== job.worker) throw new Error('筛选已取消');
+      if (runtime().document !== doc || doc.searchWorker !== job.worker) throw new Error('筛选已取消');
       const token = crypto.randomUUID();
       doc.filter = { token, positions: result.positions };
       return { token, count: result.positions.length / 2, total: result.count, capped: result.count > result.positions.length / 2, query };
     } finally { if (doc.searchWorker === job.worker) doc.searchWorker = undefined; }
   },
   searchExtracted: async (paths, query, options, requestId) => {
-    if (!Array.isArray(paths) || !paths.length || paths.length > 20000 || paths.some(file => !extractedFiles.has(file))) throw new Error('请选择本次已下载解压的文件');
+    if (!Array.isArray(paths) || !paths.length || paths.length > 20000 || paths.some(file => !runtime().extractedFiles.has(file))) throw new Error('请选择本次已下载解压的文件');
     if (!query || query.length > 2048) throw new Error('搜索内容不能为空且不得超过 2048 字符');
     if (options.regex) new RegExp(query, options.caseSensitive ? '' : 'i');
-    document?.searchWorker?.terminate(); batchSearch?.controller.abort(); batchSearch?.worker?.terminate();
-    const context = { controller: new AbortController(), worker: undefined }; batchSearch = context;
+    runtime().document?.searchWorker?.terminate(); runtime().batchSearch?.controller.abort(); runtime().batchSearch?.worker?.terminate();
+    const context = { controller: new AbortController(), worker: undefined }; runtime().batchSearch = context;
     const files = prioritizeOpenFile([...new Set(paths)], file => file);
     const result = { matches: [], count: 0, capped: false, truncatedLines: 0, files: files.length, searchedFiles: 0, errors: [] };
     try {
@@ -934,7 +970,7 @@ const handlers = {
         finally { await fsp.rm(temporary, { force: true }); }
       }
       result.capped = result.count > result.matches.length; return { ...result, source: 'local', paths: files };
-    } finally { if (batchSearch === context) batchSearch = undefined; }
+    } finally { if (runtime().batchSearch === context) runtime().batchSearch = undefined; }
   },
   searchFiles: async (directory, pattern, query, options, requestId) => {
     const matcher = (await glob).filenamePattern(pattern);
@@ -944,10 +980,10 @@ const handlers = {
     const paths = await localCopyPaths(remote => path.posix.dirname(remote) === folderPath && matcher.test(path.posix.basename(remote)));
     if (paths.length) return handlers.searchExtracted(paths, query, options, requestId);
 
-    document?.searchWorker?.terminate();
-    batchSearch?.controller.abort(); batchSearch?.worker?.terminate();
+    runtime().document?.searchWorker?.terminate();
+    runtime().batchSearch?.controller.abort(); runtime().batchSearch?.worker?.terminate();
     const context = { controller: new AbortController(), worker: undefined };
-    batchSearch = context;
+    runtime().batchSearch = context;
     const signal = context.controller.signal;
     let folder, files;
     const result = { matches: [], count: 0, capped: false, truncatedLines: 0, files: 0, searchedFiles: 0, errors: [] };
@@ -966,7 +1002,7 @@ const handlers = {
         try {
           if (/\.(zip|tar|tar\.gz|tgz)$/i.test(remote)) throw new Error('请先解压归档；批量搜索支持普通日志和 .gz');
           const attrs = await callSftp('stat', remote);
-          await copyStream(remoteSource(sftp, remote, 0, attrs.size, signal), raw, attrs.size, signal, report);
+          await copyStream(remoteSource(runtime().sftp, remote, 0, attrs.size, signal), raw, attrs.size, signal, report);
           const after = await callSftp('stat', remote);
           if (after.size !== attrs.size || after.mtime !== attrs.mtime) throw new Error('下载时文件发生变化');
           let file = raw;
@@ -987,26 +1023,26 @@ const handlers = {
       }
       result.capped = result.count > result.matches.length;
       return result;
-    } finally { if (batchSearch === context) batchSearch = undefined; }
+    } finally { if (runtime().batchSearch === context) runtime().batchSearch = undefined; }
   },
-  clearFilter: id => { if (document?.id === id) document.filter = undefined; },
+  clearFilter: id => { if (runtime().document?.id === id) runtime().document.filter = undefined; },
   search: async (id, query, options, requestId) => {
-    batchSearch?.controller.abort(); batchSearch?.worker?.terminate(); batchSearch = undefined;
-    if (document?.id !== id || !document.index) throw new Error('请等待全文缓存完成');
-    const doc = document;
+    runtime().batchSearch?.controller.abort(); runtime().batchSearch?.worker?.terminate(); runtime().batchSearch = undefined;
+    if (runtime().document?.id !== id || !runtime().document.index) throw new Error('请等待全文缓存完成');
+    const doc = runtime().document;
     doc.searchWorker?.terminate();
     const job = taskWorker('search', { file: doc.file, query, options }, data => event({ type: 'search-progress', id, requestId, ...data, result: { matches: (data.matches || []).map(match => ({ ...match, exportPath: doc.file })), count: data.count, capped: data.capped || false, truncatedLines: data.truncatedLines || 0 } }));
     doc.searchWorker = job.worker;
     const timeout = setTimeout(() => job.worker.terminate(), 30000);
     try { return addExportPath(await job.promise, doc.file); } finally { clearTimeout(timeout); if (doc.searchWorker === job.worker) doc.searchWorker = undefined; }
   },
-  cancelSearch: () => { batchSearch?.controller.abort(); batchSearch?.worker?.terminate(); batchSearch = undefined; const worker = document?.searchWorker; if (document) document.searchWorker = undefined; worker?.terminate(); },
+  cancelSearch: () => { runtime().batchSearch?.controller.abort(); runtime().batchSearch?.worker?.terminate(); runtime().batchSearch = undefined; const worker = runtime().document?.searchWorker; if (runtime().document) runtime().document.searchWorker = undefined; worker?.terminate(); },
   follow: enabled => {
     stopFollow();
     if (enabled) {
-      if (!document?.index || document.gzip) throw new Error('文件尚未就绪或是压缩文件');
-      if (document.filter) throw new Error('请先取消筛选再开启实时跟随');
-      followTimer = setInterval(() => void follow(), 1500);
+      if (!runtime().document?.index || runtime().document.gzip) throw new Error('文件尚未就绪或是压缩文件');
+      if (runtime().document.filter) throw new Error('请先取消筛选再开启实时跟随');
+      runtime().followTimer = setInterval(() => void follow(), 1500);
     }
     return Boolean(enabled);
   },
@@ -1014,9 +1050,9 @@ const handlers = {
     config.bookmarks[key] = bookmarks.slice(0, 1000).map(b => ({ line: Math.max(0, Math.floor(b.line)), note: String(b.note).slice(0, 500), color: /^#[0-9a-f]{6}$/i.test(b.color) ? b.color : '#f59e0b' }));
     await save();
   },
-  cancelTask: id => { tasks.get(id)?.abort(); },
+  cancelTask: id => { runtime().tasks.get(id)?.abort(); },
   upload: async (directory, droppedFiles, overwrite = false) => {
-    const transfer = sftp, owner = connectionOrigin?.label;
+    const transfer = runtime().sftp, owner = runtime().connectionOrigin?.label;
     if (!transfer) throw new Error('请先连接 SSH');
     const folder = await callSftp('realpath', directory || '.');
     const attrs = await callSftp('stat', folder);
@@ -1029,17 +1065,17 @@ const handlers = {
       if (chosen.canceled || !chosen.filePaths.length) return null;
       files = chosen.filePaths;
     }
-    if (sftp !== transfer) throw new Error('SSH 连接已改变，请重新选择上传目标');
+    if (runtime().sftp !== transfer) throw new Error('SSH 连接已改变，请重新选择上传目标');
     return runTask('上传', (signal, report) => uploadFiles(transfer, files, folder, signal, data => report({ ...data, destination: folder }), overwrite), owner);
   },
-  download: file => runTask('下载', (signal, report) => downloadInto(file, config.directories.download, signal, report), connectionOrigin?.label),
+  download: file => runTask('下载', (signal, report) => downloadInto(file, config.directories.download, signal, report), runtime().connectionOrigin?.label),
   batchTransfer: async (directory, pattern, unpack) => {
     const matcher = (await glob).filenamePattern(pattern);
     if (!pattern) throw new Error('请先填写文件名匹配模式');
     const folder = await callSftp('realpath', directory);
     const files = (await callSftp('readdir', folder)).filter(entry => entry.attrs.isFile() && matcher.test(entry.filename)).sort((a, b) => a.filename.localeCompare(b.filename));
     if (!files.length) throw new Error('当前目录没有匹配的文件');
-    const downloadFolder = config.directories.download, extractFolder = config.directories.extract, owner = connectionName, origin = connectionOrigin;
+    const downloadFolder = config.directories.download, extractFolder = config.directories.extract, owner = runtime().connectionName, origin = runtime().connectionOrigin;
     return runTask(unpack ? '批量下载解压' : '批量下载', async (signal, report) => {
       const result = { destination: downloadFolder, origin: origin.label, bytes: 0, files: files.length, completedFiles: 0, downloadedFiles: 0, failedFiles: 0, errors: [], paths: [] };
       const totalSize = files.reduce((sum, entry) => sum + entry.attrs.size, 0);
@@ -1057,15 +1093,15 @@ const handlers = {
             const extracted = await extractArchive(downloaded.destination, destination, signal, progress => update('解压', { currentBytes: progress.bytes }), entry.filename, true);
             await rememberLocal(path.posix.join(folder, entry.filename), extracted.paths, owner);
             result.paths.push(...extracted.paths);
-            for (const file of extracted.paths) extractedFiles.add(file);
+            for (const file of extracted.paths) runtime().extractedFiles.add(file);
           } else {
-            result.paths.push(downloaded.destination); extractedFiles.add(downloaded.destination);
+            result.paths.push(downloaded.destination); runtime().extractedFiles.add(downloaded.destination);
           }
           result.completedFiles++;
         } catch (error) {
           if (signal.aborted) {
             if (downloaded && !result.paths.includes(downloaded.destination)) {
-              result.paths.push(downloaded.destination); extractedFiles.add(downloaded.destination);
+              result.paths.push(downloaded.destination); runtime().extractedFiles.add(downloaded.destination);
             }
             break;
           }
@@ -1119,15 +1155,15 @@ const handlers = {
       source = chosen.filePaths[0];
     }
     await fsp.mkdir(config.directories.extract, { recursive: true, mode: 0o700 });
-    const owner = connectionName;
-    const origin = connectionOrigin;
+    const owner = runtime().connectionName;
+    const origin = runtime().connectionOrigin;
     return runTask('解压', async (signal, report) => {
       let archive = source;
       if (remoteFile) {
         archive = path.join(cacheRoot, crypto.randomUUID() + '-' + path.basename(source));
         const attrs = await callSftp('stat', source);
         try {
-          const bytes = await copyStream(remoteSource(sftp, source, 0, attrs.size, signal), archive, attrs.size, signal, report);
+          const bytes = await copyStream(remoteSource(runtime().sftp, source, 0, attrs.size, signal), archive, attrs.size, signal, report);
           const after = await callSftp('stat', source);
           if (bytes !== attrs.size || after.size !== attrs.size || after.mtime !== attrs.mtime) throw new Error('远程归档在下载过程中改变，请重试');
         } catch (error) { await fsp.rm(archive, { force: true }); throw error; }
@@ -1156,10 +1192,10 @@ app.whenReady().then(async () => {
   config.directories = { download: path.join(app.getPath('downloads'), 'SSH Log Viewer', 'downloads'), extract: path.join(app.getPath('downloads'), 'SSH Log Viewer', 'extracted'), ...config.directories };
   credentials = new CredentialStore(app.getPath('userData'), safeStorage);
   config.localCopies ||= [];
-  for (const item of config.localCopies) for (const file of item.paths || []) extractedFiles.add(file);
-  for (const item of config.localExtractions || []) for (const file of item.paths || []) extractedFiles.add(file);
+  for (const item of config.localCopies) for (const file of item.paths || []) runtime().extractedFiles.add(file);
+  for (const item of config.localExtractions || []) for (const file of item.paths || []) runtime().extractedFiles.add(file);
   config.lastLocalPaths = (config.lastLocalPaths || []).filter(file => fs.existsSync(file));
-  for (const file of config.lastLocalPaths) extractedFiles.add(file);
+  for (const file of config.lastLocalPaths) runtime().extractedFiles.add(file);
   config.jumpProfiles ||= [];
   let migratedJump = false;
   for (const profile of config.profiles) {
@@ -1194,7 +1230,8 @@ app.whenReady().then(async () => {
   win = new BrowserWindow({ x: Math.round(workArea.x + (workArea.width - width) / 2), y: Math.round(workArea.y + (workArea.height - height) / 2), width, height, minWidth: Math.min(1000, width), minHeight: Math.min(680, height), backgroundColor: '#101721', icon: path.join(__dirname, '../assets/icon.png'), title: `SSH Log Viewer v${app.getVersion()}`, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(name, (e, ...args) => {
     if (e.sender !== win.webContents || e.senderFrame !== win.webContents.mainFrame) throw new Error('非法请求');
-    return handler(...args);
+    if (name === 'sessionInvoke' || name === 'sessionClose') return handler(...args);
+    return sessionContext.run(getSessionRuntime('default'), () => handler(...args));
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', e => e.preventDefault());
@@ -1205,13 +1242,9 @@ app.whenReady().then(async () => {
 });
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', e => {
-  terminalModes.cancel();
-  sshTerminal.close();
-  webTelnet.close();
-  telnet.close();
   if (quitting) return;
   e.preventDefault(); quitting = true;
   clearTimeout(updateTimer); clearInterval(updateInterval);
-  const releasing = disconnect({ releasePort: true }).catch(error => console.error('退出时 SSH 远端清理失败：', error.message));
-  Promise.allSettled([updater?.dispose(), releasing, saveQueue, credentials?.queue, telnetOutputQueue, telnetConnectionLogQueue, ...telnetSetups, sshTerminal.drain()]).then(() => saveQueue).finally(() => fsp.rm(cacheRoot, { recursive: true, force: true })).finally(() => app.quit());
+  const releasing = [...sessionRuntimes.keys()].map(id => handlers.sessionClose(id));
+  Promise.allSettled([updater?.dispose(), ...releasing, saveQueue, credentials?.queue]).then(() => saveQueue).finally(() => fsp.rm(cacheRoot, { recursive: true, force: true })).finally(() => app.quit());
 });
