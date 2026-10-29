@@ -1,3 +1,4 @@
+const { dropLocal } = require('./drop-local.cjs');
 const { _electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -15,9 +16,7 @@ const assert = require('node:assert/strict');
     await app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }); }, file);
     let page = await app.firstWindow();
     const errors = []; page.on('pageerror', e => errors.push(e.message));
-    await page.getByRole('button', { name: '打开本地文件/文件夹', exact: true }).first().click();
-    await page.getByLabel('选择路径', { exact: true }).fill(file);
-    await page.getByRole('button', { name: '打开路径', exact: true }).click();
+    await dropLocal(page, file);
     await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('600 行'));
     await page.getByRole('button', { name: '字体设置', exact: true }).click();
     await page.getByLabel('日志字体', { exact: true }).fill('DejaVu Sans Mono');

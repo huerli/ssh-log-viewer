@@ -1,3 +1,4 @@
+const { dropLocal } = require('./drop-local.cjs');
 const { _electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -48,9 +49,7 @@ async function holdSearchCompletion(app) {
     const page = await app.firstWindow();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await page.getByRole('button', { name: '打开本地文件/文件夹', exact: true }).first().click();
-    await page.getByLabel('选择路径', { exact: true }).fill(root);
-    await page.getByRole('button', { name: '打开路径', exact: true }).click();
+    await dropLocal(page, root);
     await page.getByLabel('本地路径', { exact: true }).waitFor();
     await page.getByPlaceholder('搜索全文关键词或正则表达式…').fill('stream-marker');
 

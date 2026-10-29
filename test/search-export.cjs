@@ -1,3 +1,4 @@
+const { dropLocal } = require('./drop-local.cjs');
 const { _electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -16,9 +17,7 @@ const assert = require('node:assert/strict');
     app = await _electron.launch({ args: ['.'], cwd: path.resolve(__dirname, '..'), env: { ...process.env, VIEWER_DATA_DIR: path.join(temp, 'config') } });
     const page = await app.firstWindow();
     assert.equal(await page.getByRole('button', { name: '导出结果', exact: true }).isDisabled(), true);
-    await page.getByRole('button', { name: '打开本地文件/文件夹', exact: true }).first().click();
-    await page.getByLabel('选择路径', { exact: true }).fill(root);
-    await page.getByRole('button', { name: '打开路径', exact: true }).click();
+    await dropLocal(page, root);
     await page.getByLabel('本地路径', { exact: true }).waitFor();
     const input = page.getByPlaceholder('搜索全文关键词或正则表达式…');
     await input.fill('needle'); await page.getByRole('button', { name: '搜索全文', exact: true }).click();

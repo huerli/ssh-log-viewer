@@ -1228,6 +1228,7 @@ app.whenReady().then(async () => {
   const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   const width = Math.min(1440, workArea.width), height = Math.min(940, workArea.height);
   win = new BrowserWindow({ x: Math.round(workArea.x + (workArea.width - width) / 2), y: Math.round(workArea.y + (workArea.height - height) / 2), width, height, minWidth: Math.min(1000, width), minHeight: Math.min(680, height), backgroundColor: '#101721', icon: path.join(__dirname, '../assets/icon.png'), title: `SSH Log Viewer v${app.getVersion()}`, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  win.setMenu(null);
   for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(name, (e, ...args) => {
     if (e.sender !== win.webContents || e.senderFrame !== win.webContents.mainFrame) throw new Error('非法请求');
     if (name === 'sessionInvoke' || name === 'sessionClose') return handler(...args);

@@ -1,3 +1,4 @@
+const { dropLocal } = require('./drop-local.cjs');
 const { _electron } = require('playwright');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -11,9 +12,7 @@ const assert = require('node:assert/strict');
     await fs.writeFile(file, Array.from({ length: 20000 }, (_, i) => `position-${i} 中文${i >= 19970 ? " hex".repeat(300) : ""}`).join('\n') + '\n');
     app = await _electron.launch({ args: ['.'], env: { ...process.env, VIEWER_DATA_DIR: path.join(temp, 'config') } });
     const page = await app.firstWindow();
-    await page.getByRole('button', { name: '打开本地文件/文件夹', exact: true }).first().click();
-    await page.getByLabel('选择路径', { exact: true }).fill(file);
-    await page.getByRole('button', { name: '打开路径', exact: true }).click();
+    await dropLocal(page, file);
     await page.waitForFunction(() => document.querySelector('.document-bar')?.textContent.includes('20,000 行'));
     await page.waitForFunction(() => document.querySelector('[data-line="0"] .line-content')?.textContent === 'position-0 中文');
     assert.equal(await page.locator('.log-viewport').evaluate(e => e.scrollTop), 0);
