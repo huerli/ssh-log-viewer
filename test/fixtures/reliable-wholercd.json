@@ -1,0 +1,53 @@
+{
+  "db.seq": 7,
+  "db.state": 1,
+  "db.res": 0,
+  "db.data_len": 104,
+  "data": [
+    {
+      "head.trans.type": "wholercd",
+      "head.errcode": 0,
+      "head.res": "0000",
+      "head.uniq": "__DYNAMIC_LOCAL_TIME__",
+      "body": {
+        "wrcd_head": {
+          "time": 1700000000,
+          "seq": 7,
+          "train_no": "K9",
+          "driver_no": 111,
+          "assistdriver_no": 222,
+          "station_no": 333,
+          "station_no_H": 1,
+          "map_type": 2,
+          "direction": 3
+        },
+        "wrcd_body": {
+          "event_type": 1,
+          "shuntting_state": 0,
+          "tax_state": 1,
+          "dir": 0,
+          "kmpos": 1000,
+          "lon": 116000000,
+          "lat": 39000000,
+          "speed": -30,
+          "tax_speed_limit": 300,
+          "map_speed_limit": 280,
+          "rtk_state": 4,
+          "sv_num": 12,
+          "loc_acc": 3,
+          "bs_id": 7,
+          "rtcm_age": 100,
+          "ma": 1,
+          "track_no": "TRACK001",
+          "lj_sw": 0,
+          "work_condition": 1,
+          "rssi": -60,
+          "cell_mode": 2,
+          "get_tax_time": null,
+          "detail_len": null,
+          "detail": null
+        }
+      }
+    }
+  ]
+}

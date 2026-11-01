@@ -85,6 +85,7 @@ declare global {
       selectLocalPath(path: string): Promise<{ kind: 'folder'; listing: LocalListing } | { kind: 'file'; path: string; listing: LocalListing }>;
       chooseLocalFolder(): Promise<LocalListing | null>;
       listLocal(path: string): Promise<LocalListing>;
+      documentBytes(id: string): Promise<Uint8Array>;
       openLocalFile(path: string): Promise<Doc>;
       searchLocalFiles(directory: string, pattern: string, query: string, options: { regex: boolean; caseSensitive: boolean }, requestId: string): Promise<SearchResult>;
       openRemote(path: string): Promise<Doc>;

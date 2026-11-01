@@ -895,6 +895,24 @@ const handlers = {
     return listLocalDirectory(root);
   },
   listLocal: directory => listLocalDirectory(directory),
+  documentBytes: async id => {
+    const doc = runtime().document;
+    if (!doc || doc.id !== id || !doc.index) throw new Error('文件尚未就绪或已关闭');
+    const limit = 16 * 1024 * 1024;
+    const handle = await fsp.open(doc.file, 'r');
+    try {
+      if ((await handle.stat()).size > limit) throw new Error('可靠传输 DB 文件超过 16 MiB');
+      const buffer = Buffer.alloc(limit + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      if (length > limit) throw new Error('可靠传输 DB 文件超过 16 MiB');
+      return new Uint8Array(buffer.subarray(0, length));
+    } finally { await handle.close(); }
+  },
   openLocalFile: async file => openFile(null, (await authorizedLocalPath(file)).resolved),
   searchLocalFiles: async (directory, pattern, query, options, requestId) => {
     if (!query || query.length > 2048) throw new Error('搜索内容不能为空且不得超过 2048 字符');

@@ -6,6 +6,8 @@ import './style.css';
 import { SessionContext, useSession, useViewer, slotId, telnetEndpoint, sshEndpoint, type SessionSeed } from './session-context';
 import { TerminalPage } from './TerminalPage';
 import { UpdateControl } from './UpdateControl';
+import { reliableDbSlotSize } from '../shared/reliable-db.mjs';
+import { InlineReliableDbViewer, ReliableDbViewer } from './ReliableDbViewer';
 import { filenamePattern } from '../shared/glob.mjs';
 import { defaultLogFont, logLineHeight, resultLineHeight, logFontFamily } from '../shared/log-font.mjs';
 
@@ -441,6 +443,7 @@ function App({ seed }: { seed?: SessionSeed }) {
   const pendingEvents = useRef<ViewerEvent[]>([]);
   const [draggingLog, setDraggingLog] = useState(false);
   const dropOpening = useRef(false);
+  const [reliableDbOpen, setReliableDbOpen] = useState(false);
   const opening = useRef(false);
   const [openingState, setOpeningState] = useState(false);
   const [message, setMessage] = useState('就绪 · 连接服务器或打开本地日志');
@@ -882,7 +885,7 @@ function App({ seed }: { seed?: SessionSeed }) {
   useEffect(() => { setResultIndex(-1); }, [query, searchScope]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (!session.active) return;
-      if ((e.target as HTMLElement)?.closest('.telnet-page') || directorySettings || fontSettings || e.repeat) return;
+      if ((e.target as HTMLElement)?.closest('.telnet-page') || directorySettings || fontSettings || reliableDbOpen || e.repeat) return;
       const key = [e.ctrlKey ? 'Ctrl' : '', e.metaKey ? 'Meta' : '', e.altKey ? 'Alt' : '', e.shiftKey ? 'Shift' : '', e.key.length === 1 ? e.key.toUpperCase() : e.key].filter(Boolean).join('+');
       if (key === shortcuts.next || key === shortcuts.previous) {
         e.preventDefault(); void navigateResult(key === shortcuts.next ? 1 : -1);
@@ -926,8 +929,9 @@ function App({ seed }: { seed?: SessionSeed }) {
   if (!api) return <div className="browser-warning">请通过桌面程序启动。<code>npm run build && npm start</code></div>;
 
   return <div className="app" style={{ '--log-font-family': logFontFamily(font.family), '--log-font-size': `${font.size}px`, '--log-line-height': `${logLineHeight(font.size)}px`, '--result-line-height': `${resultLineHeight(font.size)}px` } as React.CSSProperties}>
-    <header className="header"><div className="brand"><span className="brand-icon">⌁</span><div><strong>SSH Log Viewer</strong><small>远程日志工作台 · v{__APP_VERSION__}</small></div></div><div className="header-actions"><button onClick={() => setDirectorySettings(true)}>设置</button></div></header>
+    <header className="header"><div className="brand"><span className="brand-icon">⌁</span><div><strong>SSH Log Viewer</strong><small>远程日志工作台 · v{__APP_VERSION__}</small></div></div><div className="header-actions"><button onClick={() => setReliableDbOpen(true)}>可靠传输 DB</button><button onClick={() => setDirectorySettings(true)}>设置</button></div></header>
     <UpdateControl settingsOpen={directorySettings} />
+    {reliableDbOpen && <ReliableDbViewer onClose={() => setReliableDbOpen(false)} />}
     <div className={`workspace${session.leftCollapsed ? ' left-collapsed' : ''}${session.rightCollapsed ? ' right-collapsed' : ''}`}>
       <aside className="left-panel" style={{ display: featureEnabled.ssh || featureEnabled.telnet || localListing ? undefined : 'none' }}>
         {featureEnabled.ssh && <><div className="panel-title ssh-panel-title">SSH <span id={slotId(session.id, "ssh-status-slot")} /></div>
@@ -980,7 +984,7 @@ function App({ seed }: { seed?: SessionSeed }) {
           onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingLog(false); }}
           onDrop={event => void dropLocal(event)}>
         {draggingLog && <div className="log-drop-hint">松开以打开本地文件或文件夹</div>}
-        {doc ? <LogView selectedLine={selectedLine} onBottomChange={bottom => { atBottomRef.current = bottom; }} key={doc.id} rowHeight={logLineHeight(font.size)} doc={doc} filter={filter} onContext={(text, x, y) => setContextMenu({ text, x, y })} words={[...rules.split(/[,，]/).map(s => s.trim().slice(0, 200)).filter(Boolean).slice(0, 12), ...extraHighlights, ...(!regex && query && query.length <= 2048 ? query.split('*').map(part => part.trim()).filter(Boolean) : [])].filter(word => !suppressedHighlights.some(excluded => sameWord(excluded, word)))} sensitive={sensitive} bookmarks={bookmarks} jump={jump} onSelect={line => { setSelectedLine(line); setSideTab('marks'); setBottomOpen(true); }} onError={setError} /> : <div className="welcome"><div className="welcome-symbol">⌁</div><h1>让远程日志，触手可及</h1><p>连接 SSH 服务器，双击文件开始查看。<br />将本地文件或文件夹拖入此处即可打开。</p><div className="features"><span>分块读取</span><span>全文搜索</span><span>高亮与标注</span><span>下载与解压</span></div></div>}</div>}
+        {doc && reliableDbSlotSize(doc.name) ? <InlineReliableDbViewer key={doc.id} doc={doc} /> : doc ? <LogView selectedLine={selectedLine} onBottomChange={bottom => { atBottomRef.current = bottom; }} key={doc.id} rowHeight={logLineHeight(font.size)} doc={doc} filter={filter} onContext={(text, x, y) => setContextMenu({ text, x, y })} words={[...rules.split(/[,，]/).map(s => s.trim().slice(0, 200)).filter(Boolean).slice(0, 12), ...extraHighlights, ...(!regex && query && query.length <= 2048 ? query.split('*').map(part => part.trim()).filter(Boolean) : [])].filter(word => !suppressedHighlights.some(excluded => sameWord(excluded, word)))} sensitive={sensitive} bookmarks={bookmarks} jump={jump} onSelect={line => { setSelectedLine(line); setSideTab('marks'); setBottomOpen(true); }} onError={setError} /> : <div className="welcome"><div className="welcome-symbol">⌁</div><h1>让远程日志，触手可及</h1><p>连接 SSH 服务器，双击文件开始查看。<br />将本地文件或文件夹拖入此处即可打开。</p><div className="features"><span>分块读取</span><span>全文搜索</span><span>高亮与标注</span><span>下载与解压</span></div></div>}</div>}
       <section className={`bottom-panel ${bottomOpen ? 'expanded' : 'collapsed'}`} aria-label="搜索结果与标注"><div className="side-tabs"><button className={sideTab === 'search' ? 'active' : ''} onClick={() => { setSideTab('search'); setBottomOpen(true); }}>搜索结果 {results ? `(${results.count})` : ''}</button><button className={sideTab === 'marks' ? 'active' : ''} onClick={() => { setSideTab('marks'); setBottomOpen(true); }}>标注 ({bookmarks.length})</button><button disabled={!results?.matches.length || exporting} title="导出当前已展示的匹配结果（含行号和日志内容，不含来源文件名），支持 TXT、CSV、JSON" onClick={() => void exportResults()}>{exporting ? '导出中…' : '导出结果'}</button><button className="panel-toggle" aria-label={bottomOpen ? '收起结果面板' : '展开结果面板'} onClick={() => setBottomOpen(value => !value)}>{bottomOpen ? '收起 ▾' : '展开 ▴'}</button></div>
         {bottomOpen && <div className="bottom-content">{sideTab === 'search' ? <>{results?.files !== undefined && <small className="batch-summary">已搜索 {results.searchedFiles}/{results.files} 个匹配文件 · {results.count.toLocaleString()} 条匹配</small>}{results?.capped && <p className="hint side-hint">仅展示前 10000 条匹配</p>}{!!results?.truncatedLines && <p className="hint side-hint">{results.truncatedLines} 个超长行仅搜索前 1MB</p>}<div className="inline"><button disabled={!results?.matches.length || openingState} title={shortcuts.previous} onClick={() => void navigateResult(-1)}>上一个</button><span>{results?.matches.length ? Math.max(0, resultIndex + 1) : 0} / {results?.matches.length || 0}</span><button disabled={!results?.matches.length || openingState} title={shortcuts.next} onClick={() => void navigateResult(1)}>下一个</button></div><SearchRows onCopy={() => setMessage('已复制搜索结果日志')} onError={setError} searching={searching} rowHeight={resultLineHeight(font.size)} results={results} onJump={match => { setResultIndex(results?.matches.indexOf(match) ?? -1); void jumpResult(match); }} /></> : <><div className="mark-form"><small>{selectedLine === null ? '点击日志行号选择要标注的行' : `标注第 ${selectedLine + 1} 行`}</small><input placeholder="添加备注…" value={note} onChange={e => setNote(e.target.value)} /><div className="inline"><input type="color" aria-label="标注颜色" value={color} onChange={e => setColor(e.target.value)} /><button className="primary" disabled={selectedLine === null || !doc?.ready} onClick={() => void run(saveMark)}>保存标注</button></div></div><div className="result-list">{bookmarks.map(mark => <div className="bookmark" key={mark.line}><button className="result" style={{ borderLeft: `3px solid ${mark.color}` }} onClick={() => goOriginal(mark.line)}><small>第 {mark.line + 1} 行</small><span>{mark.note}</span></button><button title="删除标注" onClick={() => void run(async () => { if (!doc) return; const updated = bookmarks.filter(b => b.line !== mark.line); await api.saveBookmarks(doc.bookmarkKey, updated); setBookmarks(updated); })}>×</button></div>)}</div></>}
 </div>}
