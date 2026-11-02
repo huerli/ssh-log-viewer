@@ -7,7 +7,8 @@ export type SessionId = string;
 export type SessionKind = 'ssh' | 'telnet' | 'local';
 export type WorkspaceTab = { id: SessionId; kind: SessionKind; title: string; connectionName?: string; profileName?: string };
 export type Bookmark = { line: number; note: string; color: string };
-export type Doc = { id: string; name: string; origin?: string; archive?: string; remote: boolean; compressed: boolean; size: number; ready: boolean; lines: number; bookmarkKey: string; bookmarks: Bookmark[]; preview?: string[] };
+export type SqliteResult = { tables: { name: string; type: string; sql: string | null }[]; columns?: { name: string; type: string; notnull: number; dflt_value: string | null; pk: number }[]; rows?: Record<string, string | number | null>[]; hasMore?: boolean; total?: number; offset?: number };
+export type Doc = { documentKind?: 'sqlite'; id: string; name: string; origin?: string; archive?: string; remote: boolean; compressed: boolean; size: number; ready: boolean; lines: number; bookmarkKey: string; bookmarks: Bookmark[]; preview?: string[] };
 export type Row = { line: number; position?: number; text: string; truncated?: boolean; displayTruncated?: boolean };
 export type LogFilter = { token: string; count: number; total: number; capped: boolean; query: string };
 export type Entry = { name: string; directory: boolean; size: number; mtime: number };
@@ -85,6 +86,7 @@ declare global {
       selectLocalPath(path: string): Promise<{ kind: 'folder'; listing: LocalListing } | { kind: 'file'; path: string; listing: LocalListing }>;
       chooseLocalFolder(): Promise<LocalListing | null>;
       listLocal(path: string): Promise<LocalListing>;
+      sqliteRead(id: string, table?: string, offset?: number, search?: { field: string; query: string; mode: string }): Promise<SqliteResult>;
       documentBytes(id: string): Promise<Uint8Array>;
       openLocalFile(path: string): Promise<Doc>;
       searchLocalFiles(directory: string, pattern: string, query: string, options: { regex: boolean; caseSensitive: boolean }, requestId: string): Promise<SearchResult>;

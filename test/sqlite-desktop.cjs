@@ -1,0 +1,45 @@
+const { _electron } = require('playwright');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const assert = require('node:assert/strict');
+const { DatabaseSync } = require('node:sqlite');
+const { gzipSync } = require('node:zlib');
+const { dropLocal } = require('./drop-local.cjs');
+(async () => {
+ const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'viewer-sqlite-')); let app;
+ try {
+  const file = path.join(temp, 'sample.sqlite'); const db = new DatabaseSync(file);
+  db.exec('CREATE TABLE records(id INTEGER PRIMARY KEY, label TEXT, fileid INTEGER); CREATE TABLE empty(value TEXT)');
+  const stmt = db.prepare('INSERT INTO records VALUES (?, ?, 16842753)'); for(let i=0;i<105;i++) stmt.run(i, `中文记录 ${i}`); db.close();
+  await fs.writeFile(file+'.gz', gzipSync(await fs.readFile(file)));
+  app = await _electron.launch({args:['.'],cwd:path.resolve(__dirname,'..'),env:{...process.env,VIEWER_DATA_DIR:path.join(temp,'config')}});
+  const page = await app.firstWindow(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await dropLocal(page,file+'.gz'); await page.getByLabel('SQLite 表',{exact:true}).waitFor();
+  await page.waitForFunction(()=>document.querySelector('.sqlite-viewer select')?.options.length === 3);
+  await page.getByLabel('SQLite 表',{exact:true}).selectOption('records');
+  await page.waitForFunction(()=>document.querySelectorAll('.sqlite-viewer .reliable-table tbody tr').length === 100);
+  assert.match(await page.locator('.sqlite-viewer').innerText(), /中文记录 0/);
+  await page.getByRole('button',{name:'下一页',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.sqlite-viewer .reliable-table tbody tr').length === 5);
+  assert.match(await page.locator('.sqlite-viewer').innerText(), /中文记录 104/);
+  assert.equal(await page.getByRole('button',{name:'下一页',exact:true}).isDisabled(),true);
+  assert.match(await page.locator('.sqlite-data').innerText(), /FILETYPE_SYS_EXE/);
+  await page.getByLabel('SQLite 搜索字段',{exact:true}).selectOption('id');
+  await page.getByLabel('SQLite 搜索方式',{exact:true}).selectOption('exact');
+  await page.getByLabel('SQLite 搜索内容',{exact:true}).fill('104');
+  await page.locator('.sqlite-search').getByRole('button',{name:'搜索',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.sqlite-data tbody tr').length === 1);
+  assert.match(await page.locator('.sqlite-data').innerText(), /中文记录 104/);
+  await page.screenshot({path:'/tmp/sqlite-viewer-updated.png'});
+  await page.locator('.sqlite-search').getByRole('button',{name:'清除',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.sqlite-data tbody tr').length === 100);
+  await page.getByLabel('SQLite 表',{exact:true}).selectOption('empty');
+  await page.getByText('此页没有记录。',{exact:true}).waitFor();
+  await page.locator('.sqlite-schema summary').click(); assert.match(await page.locator('.sqlite-viewer pre').innerText(), /CREATE TABLE empty/);
+  await assert.rejects(page.evaluate(()=>window.viewer.sqliteRead('wrong-id')));
+  await fs.writeFile(path.join(temp,'bad.sqlite'),'corrupt file');await dropLocal(page,path.join(temp,'bad.sqlite'));
+  await page.locator('.sqlite-viewer [role=alert]').waitFor();
+  assert.deepEqual(errors,[]); console.log('SQLite desktop passed');
+ } finally {await app?.close();await fs.rm(temp,{recursive:true,force:true});}
+})().catch(e=>{console.error(e);process.exitCode=1;});

@@ -5,6 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { connectSession } = require('./ssh-session.cjs');
+const { isSqliteFile } = require('./sqlite-reader.cjs');
 
 const { Worker } = require('node:worker_threads');
 const { pipeline } = require('node:stream/promises');
@@ -13,6 +14,7 @@ const zlib = require('node:zlib');
 const { writeSearchExport } = require('./search-export.cjs');
 const { extractArchive, extractLocalArchive } = require('./archive.cjs');
 const { remoteSource } = require('./remote-source.cjs');
+const { snapshotCommand, sourceChanged } = require('./download-snapshot.cjs');
 const { uploadFiles } = require('./sftp-upload.cjs');
 const { CredentialStore, credentialId } = require('./credentials.cjs');
 const { sourceIdentity, downloadPath, extractionPath, archiveOwner, telnetLogTarget, terminalLogTarget } = require('./source-names.cjs');
@@ -206,7 +208,7 @@ function summary(doc) {
   const copy = (config.localCopies || []).find(item => item.paths?.includes(doc.name));
   const archive = (config.localExtractions || []).find(item => item.paths?.includes(doc.name))?.source;
   const origin = doc.remote ? runtime().connectionOrigin?.label : copy?.origin || copy?.owner;
-  return { id: doc.id, name: doc.name, origin, archive, remote: Boolean(doc.remote), compressed: doc.gzip, size: doc.size, ready: Boolean(doc.index), lines: doc.index?.lines || 0, bookmarkKey: doc.bookmarkKey, bookmarks: config.bookmarks[doc.bookmarkKey] || [] };
+  return { id: doc.id, name: doc.name, origin, archive, remote: Boolean(doc.remote), compressed: doc.gzip, size: doc.size, documentKind: doc.documentKind, ready: Boolean(doc.index || doc.sqliteReady), lines: doc.index?.lines || 0, bookmarkKey: doc.bookmarkKey, bookmarks: config.bookmarks[doc.bookmarkKey] || [] };
 }
 async function prefixHash(doc) {
   if (!doc.prefixLength) return '';
@@ -217,6 +219,13 @@ async function prefixHash(doc) {
   return hash.digest('hex');
 }
 async function indexDocument(doc) {
+  if (await isSqliteFile(doc.file) || /\.(sqlite3?|db3?|s3db)(?:\.gz)?$/i.test(doc.name)) {
+    if (runtime().document !== doc) return;
+    doc.documentKind = 'sqlite'; doc.sqliteReady = true;
+    doc.size = (await fsp.stat(doc.file)).size;
+    event({ type: 'ready', ...summary(doc) });
+    return;
+  }
   const job = taskWorker('index', { file: doc.file }, progress => event({ type: 'index-progress', id: doc.id, ...progress }));
   doc.indexWorker = job.worker;
   const index = await job.promise;
@@ -339,11 +348,10 @@ async function listLocalDirectory(directory) {
   entries.sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name));
   return { path: resolved, root, entries };
 }
-function compressRemote(client, file, destination, signal) {
-  const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+function compressRemote(client, file, destination, size, signal) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(new Error('操作已取消'));
-    client.exec('umask 077; set -C; gzip -c < ' + quote(file) + ' > ' + quote(destination), (error, channel) => {
+    client.exec(snapshotCommand(file, destination, size), (error, channel) => {
       if (error) return reject(error);
       let stderr = '';
       const abort = () => { channel.signal('TERM'); channel.close(); };
@@ -376,17 +384,24 @@ async function downloadInto(file, folder, signal, report) {
   const temporary = path.join(folder, '.part-' + crypto.randomUUID());
   const client = runtime().connection, transfer = runtime().sftp;
   const remoteArchive = compressedSource ? null : '/tmp/ssh-log-viewer-' + crypto.randomUUID() + '.gz';
+  const fingerprint = async () => {
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of remoteSource(transfer, file, 0, Math.min(attrs.size, 65536), signal)) hash.update(chunk);
+    return hash.digest('hex');
+  };
   try {
+    const beforePrefix = remoteArchive ? await fingerprint() : null;
     if (remoteArchive) {
       report({ phase: '远程压缩', bytes: 0 });
-      await compressRemote(client, file, remoteArchive, signal);
+      await compressRemote(client, file, remoteArchive, attrs.size, signal);
     }
     const source = remoteArchive || file;
     const transferAttrs = await new Promise((resolve, reject) => transfer.stat(source, (error, attrs) => error ? reject(error) : resolve(attrs)));
     const bytes = await copyStream(remoteSource(transfer, source, 0, transferAttrs.size, signal), temporary, transferAttrs.size, signal, data => report({ ...data, phase: '下载' }));
     const after = await callSftp('stat', file);
     if (signal.aborted) throw new Error('操作已取消');
-    if (bytes !== transferAttrs.size || after.size !== attrs.size || after.mtime !== attrs.mtime) throw new Error('远程文件在下载过程中改变，请重试');
+    if (bytes !== transferAttrs.size || sourceChanged(attrs, after, !compressedSource)) throw new Error('远程文件被截断或覆盖，请重新下载');
+    if (remoteArchive && await fingerprint() !== beforePrefix) throw new Error('远程文件开头已改变，可能发生日志轮转，请重新下载');
     try { await fsp.copyFile(temporary, destination, fs.constants.COPYFILE_EXCL); }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
@@ -895,6 +910,17 @@ const handlers = {
     return listLocalDirectory(root);
   },
   listLocal: directory => listLocalDirectory(directory),
+  sqliteRead: async (id, table, offset = 0, search = {}) => {
+    const doc = runtime().document;
+    if (!doc || doc.id !== id || !doc.sqliteReady) throw new Error('SQLite 文件尚未就绪或已关闭');
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(path.join(__dirname, 'sqlite-worker.cjs'), { workerData: { file: doc.file, table, offset, search } });
+      const timer = setTimeout(() => { worker.terminate(); reject(new Error('读取超过 10 秒，请选择较小的表或较前的页码')); }, 10000);
+      worker.once('message', message => { clearTimeout(timer); message.error ? reject(new Error(message.error)) : resolve(message.result); });
+      worker.once('error', error => { clearTimeout(timer); reject(error); });
+      worker.once('exit', code => { clearTimeout(timer); if (code !== 0) reject(new Error('SQLite 读取进程已退出')); });
+    });
+  },
   documentBytes: async id => {
     const doc = runtime().document;
     if (!doc || doc.id !== id || !doc.index) throw new Error('文件尚未就绪或已关闭');
