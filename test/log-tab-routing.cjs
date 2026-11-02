@@ -1,0 +1,41 @@
+const { _electron } = require('playwright');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const { createServer } = require('./ssh-fixture.cjs');
+(async () => {
+  const temp = await fs.mkdtemp('/tmp/log-routing-'); let app, ssh;
+  try {
+    await fs.mkdir(path.join(temp, 'remote/system/log'), { recursive: true });
+    await fs.mkdir(path.join(temp, 'downloads'));
+    await fs.mkdir(path.join(temp, 'config'));
+    await fs.writeFile(path.join(temp, 'remote/system/log/active.log'), 'remote-log-marker\n');
+    await fs.writeFile(path.join(temp, 'downloads/local.log'), 'local-log-marker\n');
+    ssh = await createServer(path.join(temp, 'remote'), { shell: true });
+    await fs.writeFile(path.join(temp, 'config/settings.json'), JSON.stringify({ sshEnabled: true, directories: { download: path.join(temp, 'downloads'), extract: path.join(temp, 'extract') }, profiles: [{ name: 'Fixture', host: '127.0.0.1', port: ssh.port, username: 'tester', auth: 'password', keyPath: '' }] }));
+    app = await _electron.launch({ args: ['.'], env: { ...process.env, VIEWER_DATA_DIR: path.join(temp, 'config') } });
+    await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
+    const page = await app.firstWindow(); const visible = () => page.locator('.session-workspace:visible');
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    await visible().locator('.connection-actions').getByRole('button', { name: '⚙ 设置', exact: true }).click();
+    await visible().getByLabel('密码', { exact: true }).fill('fixture-password');
+    await visible().getByRole('button', { name: '保存配置', exact: true }).click();
+    await visible().locator('.connection-actions').getByRole('button', { name: '连接', exact: true }).click();
+    await visible().getByLabel('SSH 终端状态', { exact: true }).filter({ hasText: '已连接' }).waitFor();
+    await visible().locator('.file-entry').filter({ hasText: 'active.log' }).dblclick();
+    await visible().locator('.line-content').filter({ hasText: 'remote-log-marker' }).waitFor();
+    assert.equal(await visible().getByRole('tab', { name: '日志查看', exact: true }).getAttribute('aria-selected'), 'true');
+    await visible().getByRole('button', { name: '实时跟随', exact: true }).click();
+    await fs.appendFile(path.join(temp, 'remote/system/log/active.log'), 'appended-marker\n');
+    await visible().locator('.line-content').filter({ hasText: 'appended-marker' }).waitFor();
+    await visible().getByRole('tab', { name: 'SSH · Fixture', exact: true }).click();
+    await visible().getByLabel('SSH 终端状态', { exact: true }).filter({ hasText: '已连接' }).waitFor();
+    await visible().getByRole('complementary', { name: '已下载文件', exact: true }).getByRole('button', { name: '≡ local.log', exact: true }).click();
+    await visible().locator('.line-content').filter({ hasText: 'local-log-marker' }).waitFor();
+    assert.equal(await visible().getByRole('tab', { name: '日志查看', exact: true }).getAttribute('aria-selected'), 'true');
+    await visible().getByRole('tab', { name: 'SSH · Fixture', exact: true }).click();
+    await visible().getByLabel('SSH 终端状态', { exact: true }).filter({ hasText: '已连接' }).waitFor();
+    assert.deepEqual(errors, []);
+    console.log('PASS: remote and downloaded logs route to log tab, remote follow works, SSH terminal remains connected');
+  } finally { await app?.close(); await ssh?.close(); await fs.rm(temp, { recursive: true, force: true }); }
+})().catch(e => { console.error(e); process.exitCode = 1; });

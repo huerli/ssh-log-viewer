@@ -86,6 +86,7 @@ declare global {
       selectLocalPath(path: string): Promise<{ kind: 'folder'; listing: LocalListing } | { kind: 'file'; path: string; listing: LocalListing }>;
       chooseLocalFolder(): Promise<LocalListing | null>;
       listLocal(path: string): Promise<LocalListing>;
+      openRemoteFromSession(path: string, sourceSession: string): Promise<Doc>;
       sqliteRead(id: string, table?: string, offset?: number, search?: { field: string; query: string; mode: string }): Promise<SqliteResult>;
       documentBytes(id: string): Promise<Uint8Array>;
       openLocalFile(path: string): Promise<Doc>;

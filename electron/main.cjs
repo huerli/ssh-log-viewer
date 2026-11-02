@@ -207,12 +207,12 @@ async function connect(profile) {
 function summary(doc) {
   const copy = (config.localCopies || []).find(item => item.paths?.includes(doc.name));
   const archive = (config.localExtractions || []).find(item => item.paths?.includes(doc.name))?.source;
-  const origin = doc.remote ? runtime().connectionOrigin?.label : copy?.origin || copy?.owner;
+  const origin = doc.remote ? doc.origin || runtime().connectionOrigin?.label : copy?.origin || copy?.owner;
   return { id: doc.id, name: doc.name, origin, archive, remote: Boolean(doc.remote), compressed: doc.gzip, size: doc.size, documentKind: doc.documentKind, ready: Boolean(doc.index || doc.sqliteReady), lines: doc.index?.lines || 0, bookmarkKey: doc.bookmarkKey, bookmarks: config.bookmarks[doc.bookmarkKey] || [] };
 }
 async function prefixHash(doc) {
   if (!doc.prefixLength) return '';
-  const input = doc.remote ? remoteSource(runtime().sftp, doc.remote, 0, doc.prefixLength, doc.controller.signal)
+  const input = doc.remote ? remoteSource(doc.remoteSftp || runtime().sftp, doc.remote, 0, doc.prefixLength, doc.controller.signal)
     : fs.createReadStream(doc.file, { start: 0, end: doc.prefixLength - 1 });
   const hash = crypto.createHash('sha256');
   for await (const chunk of input) hash.update(chunk);
@@ -243,20 +243,24 @@ async function copyStream(stream, destination, size, signal, onProgress, maxByte
   }}), fs.createWriteStream(destination, { flags: 'wx', mode: 0o600 }), { signal });
   onProgress({ bytes, size }); return bytes;
 }
-async function openFile(remotePath, localPath) {
+async function openFile(remotePath, localPath, remoteRuntime = runtime()) {
+  const remoteStat = file => new Promise((resolve, reject) => {
+    if (!remoteRuntime.sftp) return reject(new Error('请先连接 SSH'));
+    remoteRuntime.sftp.stat(file, (error, attrs) => error ? reject(error) : resolve(attrs));
+  });
   closeDocument();
   const remote = Boolean(remotePath);
   const source = remotePath || localPath;
-  const attrs = remote ? await callSftp('stat', source) : await fsp.stat(source);
+  const attrs = remote ? await remoteStat(source) : await fsp.stat(source);
     if (!attrs.isFile()) throw new Error('请选择普通文件');
   const gzip = /\.gz$/i.test(source) && !/\.tar\.gz$/i.test(source);
   if (/\.(zip|tgz|tar|tar\.gz)$/i.test(source)) throw new Error('请使用“解压”按钮处理归档，然后打开其中的日志');
   const doc = {
-    id: crypto.randomUUID(), name: source, remote: remotePath, gzip,
+    id: crypto.randomUUID(), name: source, remote: remotePath, gzip, remoteSftp: remote ? remoteRuntime.sftp : undefined, remoteRuntime: remote ? remoteRuntime : undefined, remoteStat, origin: remote ? remoteRuntime.connectionOrigin?.label : undefined,
     size: attrs.size, mtime: remote ? attrs.mtime : attrs.mtimeMs,
     controller: new AbortController(), sourceSize: attrs.size,
     prefixLength: Math.min(attrs.size, 256), inode: remote ? undefined : attrs.ino,
-    bookmarkKey: `${remote ? runtime().connectionName : 'local'}:${source}:${attrs.size}:${remote ? attrs.mtime : attrs.mtimeMs}`,
+    bookmarkKey: `${remote ? remoteRuntime.connectionName : 'local'}:${source}:${attrs.size}:${remote ? attrs.mtime : attrs.mtimeMs}`,
   };
   doc.file = remote || gzip ? path.join(cacheRoot, doc.id + '.log') : localPath;
   runtime().document = doc;
@@ -265,7 +269,7 @@ async function openFile(remotePath, localPath) {
   if (!gzip && attrs.size) {
     const start = 0;
     const previewEnd = Math.min(attrs.size, 256 * 1024);
-    const input = remote ? remoteSource(runtime().sftp, source, start, previewEnd, doc.controller.signal) : fs.createReadStream(source, { start, end: previewEnd - 1 });
+    const input = remote ? remoteSource(remoteRuntime.sftp, source, start, previewEnd, doc.controller.signal) : fs.createReadStream(source, { start, end: previewEnd - 1 });
     const chunks = [];
     for await (const chunk of input) chunks.push(chunk);
     let buffer = Buffer.concat(chunks);
@@ -279,7 +283,7 @@ async function openFile(remotePath, localPath) {
       if (doc.controller.signal.aborted) return;
       if (remote || gzip) {
         const rawFile = gzip ? path.join(cacheRoot, doc.id + '.gz') : doc.file;
-        const input = remote ? remoteSource(runtime().sftp, source, 0, attrs.size, doc.controller.signal) : fs.createReadStream(source);
+        const input = remote ? remoteSource(remoteRuntime.sftp, source, 0, attrs.size, doc.controller.signal) : fs.createReadStream(source);
         await copyStream(input, rawFile, attrs.size, doc.controller.signal, data => event({ type: 'cache-progress', id: doc.id, ...data }));
         if (gzip) {
           const unpack = fs.createReadStream(rawFile);
@@ -290,7 +294,7 @@ async function openFile(remotePath, localPath) {
           await fsp.rm(rawFile, { force: true });
         }
         if (remote) {
-          const now = await callSftp('stat', source);
+          const now = await remoteStat(source);
           if (now.size < attrs.size || (now.size === attrs.size && now.mtime !== attrs.mtime))
             throw new Error('缓存过程中远程文件被修改，请重新打开');
         }
@@ -462,6 +466,8 @@ async function createSearchExportReader(data) {
     if (typeof match.file !== 'string' || !match.file) throw new Error(`无法定位第 ${match.line} 行的原始日志`);
     const source = match.file;
     const remote = match.source !== 'local' && data.source !== 'local';
+    const current = runtime().document;
+    if (remote && current?.remote === source && current.index) return current.file;
     const compressed = /\.gz$/i.test(source);
     if (!remote && !compressed) return source;
     const destination = path.join(temporary, crypto.randomUUID() + '.log');
@@ -500,14 +506,14 @@ async function follow() {
   if (runtime().followBusy) return;
   runtime().followBusy = true;
   try {
-    const attrs = doc.remote ? await callSftp('stat', doc.remote) : await fsp.stat(doc.file);
+    const attrs = doc.remote ? await doc.remoteStat(doc.remote) : await fsp.stat(doc.file);
     const mtime = doc.remote ? attrs.mtime : attrs.mtimeMs;
     if (attrs.size < doc.sourceSize || (!doc.remote && attrs.ino !== doc.inode) || (attrs.size === doc.sourceSize && mtime !== doc.mtime) || await prefixHash(doc) !== doc.prefix) {
       stopFollow(); event({ type: 'rotated', id: doc.id }); return;
     }
     if (attrs.size === doc.sourceSize) return;
     if (doc.remote) {
-      await pipeline(remoteSource(runtime().sftp, doc.remote, doc.sourceSize, attrs.size, doc.controller.signal), fs.createWriteStream(doc.file, { flags: 'a' }), { signal: doc.controller.signal });
+      await pipeline(remoteSource(doc.remoteSftp || runtime().sftp, doc.remote, doc.sourceSize, attrs.size, doc.controller.signal), fs.createWriteStream(doc.file, { flags: 'a' }), { signal: doc.controller.signal });
     }
     doc.sourceSize = attrs.size; doc.mtime = mtime;
     await indexDocument(doc);
@@ -948,6 +954,12 @@ const handlers = {
     const files = listing.entries.filter(entry => !entry.directory && matcher.test(entry.name)).map(entry => path.join(listing.path, entry.name));
     if (!files.length) return { matches: [], count: 0, capped: false, truncatedLines: 0, files: 0, searchedFiles: 0, errors: [], source: 'local', paths: [] };
     return handlers.searchExtracted(files, query, options, requestId);
+  },
+  openRemoteFromSession: (file, sourceId) => {
+    const requested = sessionRuntimes.get(sourceId);
+    const source = requested?.sftp ? requested : requested?.document?.remoteRuntime;
+    if (!source || source.closing || !source.sftp) throw new Error('来源 SSH 会话已断开');
+    return openFile(file, undefined, source);
   },
   openRemote: file => openFile(file),
   openLocal: async () => {

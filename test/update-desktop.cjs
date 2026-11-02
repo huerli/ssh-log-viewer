@@ -31,7 +31,7 @@ const path = require('node:path');
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ tag_name: `v${releaseVersion}`, draft: false, prerelease: false,
         html_url: `https://github.com/huerli/ssh-log-viewer/releases/tag/v${nextVersion}`,
-        name: 'Updater integration fixture', body: 'Local fixture release notes', published_at: '2026-10-24T00:00:00Z',
+        name: 'Updater integration fixture', body: '# Local fixture release notes\n\n## 改进\n\n- 支持 `SQLite` 数据库\n- **优化**日志下载\n\n<script>window.notesInjected=true</script>\n\n```sh\n./start.sh\n```\n\n' + '- 长说明内容，用于验证说明区域独立滚动。\n'.repeat(60), published_at: '2026-10-24T00:00:00Z',
         assets: [{ name: metadataName, size: 512, browser_download_url: `${origin}/metadata` }, { name: installerName, size: installer.length, browser_download_url: `${origin}/installer` }],
       }));
     } else if (req.url === '/metadata') {
@@ -97,6 +97,25 @@ const path = require('node:path');
     await dialog.waitFor();
     await dialog.getByText('Local fixture release notes', { exact: false }).waitFor();
     assert.match(await dialog.innerText(), /源码|开发|安装版|打包/);
+    assert.equal(await dialog.locator('.release-notes-content [role=heading]').count(), 2);
+    assert.equal(await dialog.locator('.release-notes-content li').count(), 62);
+    assert.equal(await dialog.locator('.release-notes-content script').count(), 0);
+    assert.equal(await page.evaluate(() => window.notesInjected), undefined);
+    for (const theme of ['light', 'dark', 'terracotta']) {
+      await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      await page.setViewportSize({ width: 760, height: 620 });
+      const layout = await dialog.evaluate(element => {
+        const notes = element.querySelector('.release-notes-content');
+        const box = element.getBoundingClientRect();
+        const buttons = [...element.querySelectorAll('button')].map(button => button.getBoundingClientRect());
+        return { scrolls: notes.scrollHeight > notes.clientHeight, fits: box.top >= 0 && box.bottom <= innerHeight, buttonsVisible: buttons.every(box => box.top >= 0 && box.bottom <= innerHeight) };
+      });
+      assert.deepEqual(layout, { scrolls: true, fits: true, buttonsVisible: true });
+      await page.screenshot({ path: path.resolve(__dirname, `../artifacts/update-notes-${theme}.png`) });
+    }
+    if (process.env.VIEWER_TEST_NOTES_ONLY) { console.log('PASS: safe Markdown, independent scrolling and visible actions in light/dark/terracotta themes'); return; }
+    await page.setViewportSize({ width: 1280, height: 900 });
+
     await dialog.getByRole('button', { name: '查看发布说明', exact: true }).click();
     assert.equal((await shellCalls()).filter(call => call[0] === 'openExternal').length, 1);
 

@@ -572,8 +572,20 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .update-version { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); }
 .update-version strong { color: var(--text); }
 .update-status { margin: 0; font-weight: 600; }
-.update-release-notes { min-height: 0; }
-.update-release-notes pre { max-height: 28vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.7; padding: 12px; background: var(--log); border: 1px solid var(--border); border-radius: 8px; }
+ .update-dialog{display:flex;flex-direction:column;max-height:calc(100dvh - 32px);overflow:hidden;gap:12px}
+.update-dialog > :not(.update-release-notes){flex-shrink:0}
+.update-release-notes{display:flex;flex-direction:column;gap:8px;min-height:0;flex:1 1 auto;overflow:hidden}
+.release-notes-content{min-height:0;max-height:45vh;overflow:auto;overflow-wrap:anywhere;font-family:inherit;font-size:13px;line-height:1.7;padding:14px 18px;background:var(--log);border:1px solid var(--border);border-radius:8px}
+.release-notes-content p{margin:8px 0;white-space:pre-wrap}
+.release-notes-heading{font-weight:650;font-size:14px;margin:18px 0 8px;color:var(--text)}
+.release-notes-heading.level-1{font-size:17px}
+.release-notes-content > :first-child{margin-top:0}
+.release-notes-content ul{padding-left:22px;margin:8px 0 12px}
+.release-notes-content li{margin:5px 0}
+.release-notes-content code{font-family:"DejaVu Sans Mono",Consolas,monospace;font-size:.92em;background:var(--tint);border-radius:4px;padding:1px 4px}
+.release-notes-content pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0;padding:10px;background:var(--tint);border-radius:6px}
+.release-notes-content pre code{padding:0;background:transparent}
+@media(max-height:650px){.update-dialog{gap:6px;padding:12px}.update-dialog .panel-title{margin-bottom:0}.release-notes-content{padding:10px 12px}}
 .update-download-progress { display: grid; gap: 6px; }
 .update-download-progress progress { width: 100%; accent-color: var(--accent); }
 .update-actions { flex-wrap: wrap; gap: 8px; }
@@ -738,3 +750,10 @@ mark{color:var(--mark-text);border-radius:2px;padding:0 1px}
 .sqlite-viewer{gap:10px;font-family:Inter,"Noto Sans CJK SC","Microsoft YaHei",sans-serif}.sqlite-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.sqlite-heading>div{display:flex;align-items:center;gap:10px;min-width:0}.sqlite-heading strong{font-size:15px;white-space:nowrap}.sqlite-heading small{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sqlite-readonly{font-size:11px;border:1px solid var(--border);border-radius:5px;padding:2px 7px;color:var(--success);white-space:nowrap}.sqlite-count{color:var(--muted);white-space:nowrap}.sqlite-toolbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px;background:var(--tint);border:1px solid var(--border);border-radius:8px;flex-shrink:0}.sqlite-table-picker{display:flex;align-items:center;gap:8px;white-space:nowrap}.sqlite-table-picker select{min-width:170px;max-width:280px}.sqlite-search{display:flex;gap:8px;align-items:center;flex:1;min-width:0;flex-wrap:wrap}.sqlite-search input{flex:1;min-width:180px}.sqlite-search select{max-width:180px}.sqlite-schema{border:1px solid var(--border);border-radius:6px;background:var(--panel);padding:8px 12px}.sqlite-schema summary{cursor:pointer}.sqlite-schema summary span{color:var(--muted);margin-left:12px;font-size:12px}.sqlite-data{border-radius:8px;min-height:120px}.sqlite-data table{font-family:inherit;font-size:12px}.sqlite-data th{font-weight:600;padding:10px 12px}.sqlite-data td{padding:8px 12px;line-height:1.45;border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent)}.sqlite-data tbody tr:nth-child(even){background:color-mix(in srgb,var(--tint) 45%,var(--log))}.sqlite-data tbody tr:hover{background:var(--hover)}.sqlite-data .sqlite-rowno{color:var(--muted);width:45px;text-align:right;font-variant-numeric:tabular-nums}.sqlite-data .sqlite-filetype{white-space:nowrap;color:var(--accent-text);font-size:11px}.sqlite-loading{opacity:.55;pointer-events:none}.sqlite-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;color:var(--muted);flex-shrink:0}.sqlite-footer>div{display:flex;align-items:center;gap:12px}.sqlite-hint{font-size:11px;margin:0}.sqlite-empty{padding:28px!important;text-align:center;color:var(--muted)}
 .sqlite-search select{flex:0 0 120px;width:120px}.sqlite-search select[aria-label="SQLite 搜索方式"]{flex-basis:80px;width:80px}.sqlite-search input{flex:1 1 140px;min-width:130px}.sqlite-search button{white-space:nowrap;flex-shrink:0}
 .sqlite-data .sqlite-md5{font-family:"DejaVu Sans Mono",Consolas,"Liberation Mono",monospace;white-space:nowrap;font-variant-ligatures:none;font-variant-numeric:tabular-nums;min-width:32ch}.sqlite-md5 span{display:inline-block;min-width:32ch}
+/* Keep generic settings-card spacing out of the compact updater. */
+.settings-backdrop>.directory-settings.update-dialog:not(.app-settings){width:min(700px,calc(100vw - 32px));padding:20px;max-height:calc(100dvh - 32px);overflow:hidden}
+.settings-backdrop>.directory-settings.update-dialog:not(.app-settings)>.panel-title{margin:0;padding-bottom:10px}
+.settings-backdrop>.directory-settings.update-dialog:not(.app-settings)>.hint{margin:0;padding-top:0;border:0}
+.settings-backdrop>.directory-settings.update-dialog:not(.app-settings)>label{margin:0}
+.settings-backdrop>.directory-settings.update-dialog:not(.app-settings)>.inline button{margin-top:0}
+@media(max-height:650px){.settings-backdrop>.directory-settings.update-dialog:not(.app-settings){padding:12px;gap:6px}}
