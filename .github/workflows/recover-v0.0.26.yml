@@ -1,0 +1,19 @@
+name: Recover V0.0.26 release
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/recover-v0.0.26.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci-release.yml
+    with:
+      source_tag: V0.0.26
+      publish: true
+    secrets: inherit
