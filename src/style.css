@@ -127,7 +127,12 @@ small,.hint{color:var(--muted)}
 .files-title button{padding:3px 8px}
 .path-bar{display:flex;gap:5px}
 .path-bar .favorite-path-toggle{padding:3px 6px;font-size:16px;line-height:1;color:var(--accent-text)}
-.favorite-paths{margin-top:6px;font-size:11px;width:100%;min-width:0;text-overflow:ellipsis}
+.path-input-combo{display:flex;flex:1;min-width:0;position:relative}
+.path-suggestions{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:30;max-height:260px;overflow:auto;padding:5px;background:var(--input);border:1px solid var(--border);border-radius:6px;box-shadow:0 5px 16px #0003}
+.path-suggestions small{display:block;padding:5px 6px;color:var(--muted);font-size:10px}
+.path-suggestions p{margin:5px 6px;color:var(--muted);font-size:11px}
+.path-suggestions button{display:block;width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:transparent;border:0;font-family:monospace;font-size:11px}
+.path-suggestions button:hover,.path-suggestions button:focus{background:var(--hover)}
 .new-command-group-dialog label.log-level-preset-toggle{display:flex;align-items:center;gap:8px;margin-top:18px}
 .new-command-group-dialog .log-level-preset-toggle input{width:auto;min-height:0;margin:0}
 .log-level-preset-fields{display:flex;flex-direction:column;gap:12px;margin-top:16px}

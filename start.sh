@@ -18,13 +18,12 @@ fi
 # Always build from the current sources; an existing dist may belong to an older version.
 "$VIEWER_NODE" node_modules/typescript/bin/tsc --noEmit
 "$VIEWER_NODE" node_modules/vite/bin/vite.js build
-VIEWER_SANDBOX_FLAGS=()
 if [[ "$(uname -s)" == "Linux" ]]; then
   VIEWER_ELECTRON="$("$VIEWER_NODE" -p "require('electron')")"
   VIEWER_SANDBOX="$(dirname "$VIEWER_ELECTRON")/chrome-sandbox"
   if [[ ! -u "$VIEWER_SANDBOX" ]] || [[ "$(stat -c '%u' "$VIEWER_SANDBOX" 2>/dev/null || echo unknown)" != "0" ]]; then
     # Skip the unconfigured SUID helper; Chromium still uses its namespace sandbox.
-    VIEWER_SANDBOX_FLAGS+=(--disable-setuid-sandbox)
+    set -- --disable-setuid-sandbox "$@"
   fi
 fi
-exec "$VIEWER_NODE" node_modules/electron/cli.js . "${VIEWER_SANDBOX_FLAGS[@]}" "$@"
+exec "$VIEWER_NODE" node_modules/electron/cli.js . "$@"

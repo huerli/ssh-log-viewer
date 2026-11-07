@@ -104,7 +104,7 @@ ssh_forward() (
       }
       if (!no_session || forwards != 1 || destination == "") return 0
       if (destination == "" || destination ~ /^-/ || destination !~ /^[][A-Za-z0-9_.:-]+$/) return 0
-      printf "%d %s %d %s\n", forward_port, destination, ssh_port, login == "" ? "-" : login
+      printf "%d %s %d %s\n", forward_port, destination, ssh_port, (login == "" ? "-" : login)
       return 1
     }
     END { if (!parse()) exit 1 }
