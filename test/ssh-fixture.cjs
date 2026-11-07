@@ -39,7 +39,7 @@ async function createServer(root, options = {}) {
       }
       session.on('sftp', acceptSftp => {
       const sftp = acceptSftp(), handles = new Map(); let next = 1;
-      for (const type of ['REALPATH', 'STAT', 'LSTAT', 'OPENDIR', 'READDIR', 'OPEN', 'READ', 'WRITE', 'REMOVE']) {
+      for (const type of ['REALPATH', 'STAT', 'LSTAT', 'OPENDIR', 'READDIR', 'OPEN', 'READ', 'WRITE', 'REMOVE', 'MKDIR']) {
         sftp.on(type, () => requests.push(type));
       }
       const resolve = name => {
@@ -56,6 +56,7 @@ async function createServer(root, options = {}) {
       for (const type of ['STAT', 'LSTAT']) sftp.on(type, (id, name) => {
         try { fs.stat(resolve(name), (e, stat) => e ? status(id, e) : sftp.attrs(id, attrs(stat))); } catch (e) { status(id, e); }
       });
+      sftp.on('MKDIR', (id, name) => { try { fs.mkdir(resolve(name), e => e ? status(id, e) : sftp.status(id, STATUS.OK)); } catch (e) { status(id, e); } });
       sftp.on('OPENDIR', (id, name) => {
         try { fs.readdir(resolve(name), (e, entries) => e ? status(id, e) : sftp.handle(id, handle({ directory: resolve(name), entries, sent: false }))); } catch (e) { status(id, e); }
       });

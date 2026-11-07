@@ -40,7 +40,8 @@ async function copyFile(sftp, local, remote, expectedSize, signal, report, overw
   try {
     checkAbort(signal);
     try {
-      await call(sftp, 'lstat', remote);
+      const target = await call(sftp, 'lstat', remote);
+      if (overwrite && !target.isFile()) throw new Error('远程同名路径不是普通文件，已跳过');
       if (!overwrite) throw new Error('远程同名文件已存在，已跳过');
       existingTarget = true;
     } catch (error) { if (!missing(error)) throw error; }
@@ -87,23 +88,63 @@ async function uploadFiles(sftp, localFiles, remoteDirectory, signal, report = (
   const directory = await call(sftp, 'lstat', remoteDirectory);
   if (!directory.isDirectory()) throw new Error('远程目标不是目录');
   const entries = [];
-  for (const local of files) {
-    if (signal?.aborted) return { ...result, cancelled: true };
+  async function collect(local, relative) {
+    checkAbort(signal);
     try {
-      const stats = await fsp.stat(local);
-      if (!stats.isFile()) throw new Error('仅支持上传普通文件，不支持目录');
-      entries.push({ local, size: stats.size }); result.size += stats.size;
-    } catch (error) { entries.push({ local, size: 0, error }); }
+      const stats = await fsp.lstat(local);
+      if (stats.isSymbolicLink()) throw new Error('不支持上传符号链接');
+      if (!stats.isFile() && !stats.isDirectory()) throw new Error('仅支持上传普通文件和目录');
+      const children = stats.isDirectory() ? (await fsp.readdir(local)).sort() : [];
+      entries.push({ local, relative, directory: stats.isDirectory(), size: stats.isFile() ? stats.size : 0 });
+      if (stats.isFile()) result.size += stats.size;
+      else {
+        for (const name of children) await collect(path.join(local, name), path.posix.join(relative, name));
+      }
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      entries.push({ local, relative, size: 0, error });
+    }
+  }
+  try {
+    for (const local of files) {
+      const name = path.basename(local);
+      if (!name || name === '.' || name === '..') throw new Error('不能上传文件系统根目录');
+      await collect(local, name);
+    }
+  } catch (error) {
+    if (signal?.aborted) return { ...result, cancelled: true };
+    throw error;
+  }
+  result.files = entries.length;
+  async function ensureDirectory(relative) {
+    let remote = remoteDirectory;
+    for (const name of relative.split('/').filter(Boolean)) {
+      checkAbort(signal);
+      remote = path.posix.join(remote, name);
+      let stats;
+      try { stats = await call(sftp, 'lstat', remote); }
+      catch (error) {
+        if (!missing(error)) throw error;
+        try { await call(sftp, 'mkdir', remote); }
+        catch (mkdirError) {
+          // Another upload may have created it; validate its type below.
+          try { stats = await call(sftp, 'lstat', remote); } catch { throw mkdirError; }
+        }
+        stats ||= await call(sftp, 'lstat', remote);
+      }
+      if (!stats.isDirectory() || stats.isSymbolicLink?.()) throw new Error('远程同名路径不是目录，已跳过');
+    }
   }
   for (let index = 0; index < entries.length; index++) {
     if (signal?.aborted) break;
-    const entry = entries[index], file = path.basename(entry.local);
+    const entry = entries[index], file = entry.relative;
     const remote = path.posix.join(remoteDirectory, file);
-    const update = currentBytes => report({ phase: '上传', bytes: result.bytes + currentBytes, size: result.size, currentBytes, currentSize: entry.size, file, fileIndex: index + 1, files: files.length, completedFiles: result.completedFiles, failedFiles: result.failedFiles });
+    const update = currentBytes => report({ phase: '上传', bytes: result.bytes + currentBytes, size: result.size, currentBytes, currentSize: entry.size, file, fileIndex: index + 1, files: result.files, completedFiles: result.completedFiles, failedFiles: result.failedFiles });
     try {
       update(0);
       if (entry.error) throw entry.error;
-      result.bytes += await copyFile(sftp, entry.local, remote, entry.size, signal, update, overwrite);
+      await ensureDirectory(entry.directory ? file : path.posix.dirname(file) === '.' ? '' : path.posix.dirname(file));
+      if (!entry.directory) result.bytes += await copyFile(sftp, entry.local, remote, entry.size, signal, update, overwrite);
       result.completedFiles++; result.paths.push(remote);
     } catch (error) {
       if (signal?.aborted) {

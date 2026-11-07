@@ -31,6 +31,7 @@ async function fixture(t) {
       assert.equal(this, sftp); calls.push(['close']);
       const fd = handle.readUInt32BE(); handles.delete(fd); fs.close(fd, callback);
     },
+    mkdir(file, callback) { fs.mkdir(this.resolve(file), callback); },
     unlink(file, callback) { calls.push(['unlink', file]); fs.unlink(this.resolve(file), callback); }
   };
   t.after(() => { for (const fd of handles) fs.closeSync(fd); });
@@ -76,14 +77,36 @@ test('skips existing files, directories, symlinks and repeated names without rem
   assert.equal(await readFile(path.join(remote, 'logs', 'existing.log'), 'utf8'), 'replacement');
 });
 
-test('rejects local directories and missing sources while continuing valid files', async t => {
-  const { local, remote, sftp, calls } = await fixture(t);
-  const source = await localFile(local, 'valid.log');
-  const result = await uploadFiles(sftp, [local, path.join(local, 'missing'), source], '/logs');
-  assert.equal(result.failedFiles, 2); assert.equal(result.completedFiles, 1);
-  assert.match(result.errors[0], /不支持目录/);
-  assert.equal(calls.filter(call => call[0] === 'open').length, 1);
-  assert.equal(await readFile(path.join(remote, 'logs', 'valid.log'), 'utf8'), '中文日志\n');
+test('uploads nested directories and empty folders, skips links and missing sources', async t => {
+  const { local, remote, sftp } = await fixture(t);
+  await mkdir(path.join(local, 'nested'));
+  await mkdir(path.join(local, 'empty'));
+  await localFile(local, 'nested/中文.log', 'nested content');
+  await fs.promises.symlink(local, path.join(local, 'loop'));
+  const result = await uploadFiles(sftp, [local, path.join(local, 'missing')], '/logs');
+  assert.equal(result.failedFiles, 2);
+  assert.equal(result.completedFiles, 4);
+  assert.match(result.errors.join(' '), /符号链接/);
+  assert.equal(await readFile(path.join(remote, 'logs/local/nested/中文.log'), 'utf8'), 'nested content');
+  assert.ok((await fs.promises.stat(path.join(remote, 'logs/local/empty'))).isDirectory());
+});
+
+test('remote directory links and non-file overwrite targets remain untouched', async t => {
+  const { local, remote, sftp } = await fixture(t);
+  await mkdir(path.join(local, 'folder'));
+  await localFile(local, 'folder/a.log', 'replacement');
+  await mkdir(path.join(remote, 'outside'));
+  await writeFile(path.join(remote, 'outside/a.log'), 'keep');
+  await fs.promises.symlink('../outside', path.join(remote, 'logs/folder'));
+  const result = await uploadFiles(sftp, [path.join(local, 'folder')], '/logs', undefined, () => {}, true);
+  assert.equal(result.completedFiles, 0);
+  assert.equal(result.failedFiles, 2);
+  assert.equal(await readFile(path.join(remote, 'outside/a.log'), 'utf8'), 'keep');
+  const file = await localFile(local, 'linked.log', 'overwrite');
+  await fs.promises.symlink('../outside/a.log', path.join(remote, 'logs/linked.log'));
+  const linked = await uploadFiles(sftp, [file], '/logs', undefined, () => {}, true);
+  assert.equal(linked.failedFiles, 1);
+  assert.equal(await readFile(path.join(remote, 'outside/a.log'), 'utf8'), 'keep');
 });
 
 test('exclusive open prevents races after existence checks and never unlinks failed creates', async t => {

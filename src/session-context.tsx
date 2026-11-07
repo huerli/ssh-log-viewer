@@ -2,7 +2,7 @@ import React, { createContext, useContext } from 'react';
 import type { Profile } from './types';
 export type TerminalSeed = { host: string; port: number; name: string; webMode: boolean; webAddress: string; webUser: string; webPassword: string; rememberPassword: boolean; device: string; deviceName: string; token: string };
 export type SessionSeed = { kind: 'ssh'; profile: Profile } | { kind: 'telnet'; terminal: TerminalSeed } | { kind: 'log'; path: string; source?: 'remote' | 'extracted' | 'local'; sourceSession?: string; line?: number };
-export const SessionContext = createContext({ id: 'default', active: true, leftCollapsed: false, rightCollapsed: false, toggleLeft: () => {}, toggleRight: () => {}, tabBar: null as React.ReactNode, registerReconnect: (_callback: () => void): (() => void) => () => {}, beforeConnect: (_seed: SessionSeed): boolean => false, title: (_title: string) => {} });
+export const SessionContext = createContext({ id: 'default', active: true, fileBrowserOwner: '', fileBrowserHost: null as HTMLElement | null, setFileBrowserHost: (_host: HTMLDivElement | null) => {}, leftCollapsed: false, rightCollapsed: false, toggleLeft: () => {}, toggleRight: () => {}, tabBar: null as React.ReactNode, registerReconnect: (_callback: () => void): (() => void) => () => {}, beforeConnect: (_seed: SessionSeed): boolean => false, title: (_title: string) => {} });
 export function useSession() { return useContext(SessionContext); }
 export function useViewer() {
   const { id } = useSession();
