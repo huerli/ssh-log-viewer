@@ -55,8 +55,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
   const showOutputRef = useRef(onShowOutput);
   showOutputRef.current = onShowOutput;
   const [webMode, setWebMode] = useState(seed?.webMode || false);
-  const webModeRef = useRef(webMode);
-  webModeRef.current = webMode;
+  const connectedWebModeRef = useRef(Boolean(seed?.webMode));
   const webLineRef = useRef('');
   const [webNodes, setWebNodes] = useState<WebNode[]>(readWebNodes);
   const [webNodeId, setWebNodeId] = useState('');
@@ -215,7 +214,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
         return;
       }
       if (isSsh) { void write(text).catch(error => setStatus(String(error))); return; }
-      if (webModeRef.current) {
+      if (connectedWebModeRef.current) {
         if (text === '\x03') {
           webLineRef.current = ''; term.write('^C\r\n');
           void api.telnetWrite(text).catch(error => setStatus(String(error)));
@@ -270,7 +269,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     // SSH session state intact so returning to the page reuses the existing
     // shell instead of opening a second session (or showing it as closed).
   }, [active]);
-  const send = async (text: string) => { if (!activeRef.current) return; if (!connectedRef.current || (isSsh && sshDisconnecting)) { if (!text.trim()) { if (!connectLock.current) reconnectRef.current(); } else setStatus(disconnectedMessage); return; } showOutputRef.current(); if (!isSsh && echoRef.current) terminal.current?.write(text.replace(/\r?\n/g, '\r\n')); try { await write(!isSsh && webModeRef.current ? text.replace(/[\r\n]+$/, '') + (text === '\x03' ? '' : '\n') : text); } catch (error) { setStatus(String(error)); } };
+  const send = async (text: string) => { if (!activeRef.current) return; if (!connectedRef.current || (isSsh && sshDisconnecting)) { if (!text.trim()) { if (!connectLock.current) reconnectRef.current(); } else setStatus(disconnectedMessage); return; } showOutputRef.current(); if (!isSsh && echoRef.current) terminal.current?.write(text.replace(/\r?\n/g, '\r\n')); try { await write(!isSsh && connectedWebModeRef.current ? text.replace(/[\r\n]+$/, '') + (text === '\x03' ? '' : '\n') : text); } catch (error) { setStatus(String(error)); } };
   async function openSshTerminal() {
     if (sshOpening.current) return;
     sshOpening.current = true;
@@ -291,7 +290,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     const { host, port, webMode, webAddress, webUser, webPassword, rememberPassword, device, deviceName, token: telnetToken } = target;
     const webNodeName = target.name, directNodeName = target.name;
     if (!webMode && !host.trim()) { setConnectionSettings(true); setStatus('请填写新增连接的主机和端口'); return; }
-    if (connectLock.current) return; if (session.beforeConnect({ kind: 'telnet', terminal: { host, port, name: webMode ? webNodeName : directNodeName, webMode, webAddress, webUser, webPassword, rememberPassword, device, deviceName, token: telnetToken } })) return; if (connectedRef.current) { await showOutputRef.current(); terminal.current?.focus(); return; } lastTelnetAttempt.current = target; connectLock.current = true; session.title(`Telnet · ${webMode ? webNodeName || device : directNodeName || host}`); const attempt = ++connectionVersion.current; const current = () => connectionVersion.current === attempt; setBusy(true); await showOutputRef.current();
+    if (connectLock.current) return; if (session.beforeConnect({ kind: 'telnet', terminal: { host, port, name: webMode ? webNodeName : directNodeName, webMode, webAddress, webUser, webPassword, rememberPassword, device, deviceName, token: telnetToken } })) return; if (connectedRef.current) { await showOutputRef.current(); terminal.current?.focus(); return; } lastTelnetAttempt.current = target; connectedWebModeRef.current = Boolean(webMode); connectLock.current = true; session.title(`Telnet · ${webMode ? webNodeName || device : directNodeName || host}`); const attempt = ++connectionVersion.current; const current = () => connectionVersion.current === attempt; setBusy(true); await showOutputRef.current();
       if (!everConnected.current) terminal.current?.reset();
       searchAddon.current?.clearDecorations();
       setSearchText(''); setSearchMessage(''); searchingRef.current = false;
@@ -364,13 +363,13 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     {isSsh && sshStatusSlot && createPortal(<span className={`connection-status telnet-connection-status${connected && sshConnection ? ' connected' : busy || sshConnecting ? ' connecting' : ''}`} role="status" aria-label="SSH 终端状态" title={sshConnection ? status : '未连接'}>{sshConnecting ? '连接中…' : sshConnection ? status : '未连接'}</span>, sshStatusSlot)}
     {displaySlot && createPortal(<div className="shared-telnet-content">{isSsh && sshConnection && !connected && !busy && <div className="inline ssh-terminal-toolbar"><button onClick={() => void openSshTerminal()}>重试终端</button></div>}<form className="inline telnet-search" onSubmit={e => { e.preventDefault(); find(); }}><input ref={searchInput} aria-label={"搜索 " + label + " 输出"} placeholder="搜索终端输出（Ctrl+F）" value={searchText} onChange={e => { setSearchText(e.target.value); searchingRef.current = false; setSearchMessage(''); searchAddon.current?.clearDecorations(); }} onKeyDown={e => { if (e.key === 'Escape') { searchingRef.current = false; searchAddon.current?.clearDecorations(); terminal.current?.focus(); } if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); find(true); } }} /><label title="区分大小写"><input aria-label="区分大小写" type="checkbox" checked={caseSensitive} onChange={e => setCaseSensitive(e.target.checked)} />Aa</label><label><input type="checkbox" checked={regex} onChange={e => setRegex(e.target.checked)} />正则</label><button type="button" disabled={!searchText} onClick={() => find(true)}>上一个</button><button disabled={!searchText}>下一个</button><span aria-live="polite">{searchMessage}</span></form>
     <div className="telnet-output" onClick={() => terminal.current?.focus()}><div ref={viewport} className="telnet-terminal-host" aria-label={label + " 交互终端"} /></div></div>, displaySlot)}
-    <TelnetCommands visible={active} protocol={protocol} settingsSlot={settingsSlot} onSend={command => { if (!connectedRef.current) { void send(''); return; } let text = command.replace(/(?:\\r|\\n|[\r\n])+$/g, '').trim(); if (!isSsh && webModeRef.current && !/^send(?:\s|$)/i.test(text)) text = 'send ' + text; void send(text + (isSsh ? '\r' : '\r\n')); terminal.current?.focus(); }} streamSlot={(groups, device) => <CommandStream key={device} protocol={protocol} groups={groups} enabled={active && connected && !(isSsh && sshDisconnecting)} send={async command => {
+    <TelnetCommands visible={active} protocol={protocol} settingsSlot={settingsSlot} onSend={command => { if (!connectedRef.current) { void send(''); return; } let text = command.replace(/(?:\\r|\\n|[\r\n])+$/g, '').trim(); if (!isSsh && connectedWebModeRef.current && !/^send(?:\s|$)/i.test(text)) text = 'send ' + text; void send(text + (isSsh ? '\r' : '\r\n')); terminal.current?.focus(); }} streamSlot={(groups, device) => <CommandStream key={device} protocol={protocol} groups={groups} enabled={active && connected && !(isSsh && sshDisconnecting)} send={async command => {
       if (!activeRef.current || !connectedRef.current || (isSsh && sshDisconnectingRef.current)) throw new Error('终端未连接');
       let text = command;
-      if (!isSsh && webModeRef.current && !/^send(?:\s|$)/i.test(text)) text = 'send ' + text;
+      if (!isSsh && connectedWebModeRef.current && !/^send(?:\s|$)/i.test(text)) text = 'send ' + text;
       await showOutputRef.current();
       if (!isSsh && echoRef.current) terminal.current?.write(text + '\r\n');
-      await write(text + (isSsh ? '\r' : webModeRef.current ? '\n' : '\r\n'));
+      await write(text + (isSsh ? '\r' : connectedWebModeRef.current ? '\n' : '\r\n'));
     }} />} />
     {active && logApplied && <small className="terminal-feedback" role="status">{logApplied}</small>}
     {active && <form className="inline"  onSubmit={e => { e.preventDefault(); void send(input + (isSsh ? '\r' : '\r\n')); setInput(''); }}><input type="text" aria-label={label + " 输入"} onKeyDown={e => { if (e.key === 'Enter' && (!connectedRef.current || (isSsh && sshDisconnecting)) && !input.trim()) { e.preventDefault(); if (!connectLock.current) reconnectRef.current(); } }} autoComplete="off" value={input} onChange={e => setInput(e.target.value)} placeholder={isSsh ? "输入 SSH 命令，按 Enter 发送" : "输入命令或登录信息，按 Enter 发送"} style={{ flex: 1 }} /><button disabled={!connected}>发送</button></form>}

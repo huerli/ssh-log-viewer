@@ -9,10 +9,11 @@ const { createServer } = require('./ssh-fixture.cjs');
 (async () => {
   const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'viewer-sessions-')));
   const sockets = new Set();
+  const received = [];
   const echo = socket => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
-    socket.on('data', bytes => socket.write(bytes));
+    socket.on('data', bytes => { received.push(bytes.toString('utf8')); socket.write(bytes); });
   };
   const server = net.createServer(echo);
   const secondServer = net.createServer(echo);
@@ -82,6 +83,14 @@ const { createServer } = require('./ssh-fixture.cjs');
     await visible().locator('.telnet-connection-actions').getByRole('button', { name: '连接', exact: true }).click();
     await visible().getByLabel('Telnet 连接状态', { exact: true }).filter({ hasText: '已连接' }).waitFor();
     assert.equal(await visible().getByRole('tab', { name: 'Telnet · Local echo', exact: true }).count(), 1, 'same IP and port reuses the tab');
+    // Switching the left Telnet dropdown to Web must not add a "send " prefix to an already connected direct Telnet tab.
+    received.length = 0;
+    await visible().getByLabel('Telnet 连接选择', { exact: true }).selectOption('__web__');
+    await visible().getByRole('button', { name: '设备信息', exact: true }).click();
+    await page.waitForTimeout(250);
+    assert.ok(received.join('').includes('dev-get-info\r\n'), 'direct Telnet tab must send raw command');
+    assert.equal(received.join('').includes('send '), false, 'direct Telnet tab must not prepend send when left dropdown selects Web');
+    await visible().getByLabel('Telnet 连接选择', { exact: true }).selectOption('local');
     assert.ok(await visible().locator('.document-bar').evaluate(e => e.getBoundingClientRect().height) <= 36);
     for (const socket of sockets) socket.destroy();
     await visible().getByLabel('Telnet 连接状态', { exact: true }).filter({ hasText: '已断开' }).waitFor();
