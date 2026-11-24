@@ -6,6 +6,8 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { connectSession } = require('./ssh-session.cjs');
 const { isSqliteFile } = require('./sqlite-reader.cjs');
+const { isCaptureFile } = require('./pcap-reader.cjs');
+const { createCaptureSession } = require('./pcap-session.cjs');
 
 const { Worker } = require('node:worker_threads');
 const { pipeline } = require('node:stream/promises');
@@ -120,7 +122,7 @@ function closeDocument() {
   if (!runtime().document) return;
   const previous = runtime().document;
   previous.controller.abort();
-  const stopping = [previous.indexWorker?.terminate(), previous.searchWorker?.terminate()];
+  const stopping = [previous.indexWorker?.terminate(), previous.searchWorker?.terminate(), previous.captureSession?.dispose()];
   if (previous.remote || previous.gzip) {
     Promise.allSettled([previous.work, ...stopping]).then(async () => {
       await fsp.rm(previous.file, { force: true });
@@ -208,7 +210,7 @@ function summary(doc) {
   const copy = (config.localCopies || []).find(item => item.paths?.includes(doc.name));
   const archive = (config.localExtractions || []).find(item => item.paths?.includes(doc.name))?.source;
   const origin = doc.remote ? doc.origin || runtime().connectionOrigin?.label : copy?.origin || copy?.owner;
-  return { id: doc.id, name: doc.name, origin, archive, remote: Boolean(doc.remote), compressed: doc.gzip, size: doc.size, documentKind: doc.documentKind, ready: Boolean(doc.index || doc.sqliteReady), lines: doc.index?.lines || 0, bookmarkKey: doc.bookmarkKey, bookmarks: config.bookmarks[doc.bookmarkKey] || [] };
+  return { id: doc.id, name: doc.name, origin, archive, remote: Boolean(doc.remote), compressed: doc.gzip, size: doc.size, documentKind: doc.documentKind, ready: Boolean(doc.index || doc.sqliteReady || doc.captureReady), packetCount: doc.captureSummary?.packetCount, lines: doc.index?.lines || 0, bookmarkKey: doc.bookmarkKey, bookmarks: config.bookmarks[doc.bookmarkKey] || [] };
 }
 async function prefixHash(doc) {
   if (!doc.prefixLength) return '';
@@ -219,6 +221,17 @@ async function prefixHash(doc) {
   return hash.digest('hex');
 }
 async function indexDocument(doc) {
+  if (doc.documentKind === 'pcap' || await isCaptureFile(doc.file)) {
+    if (runtime().document !== doc) return;
+    doc.documentKind = 'pcap';
+    doc.captureSession = createCaptureSession(doc.file);
+    doc.captureSummary = await doc.captureSession.ready;
+    if (runtime().document !== doc) return;
+    doc.captureReady = true;
+    doc.size = (await fsp.stat(doc.file)).size;
+    event({ type: 'ready', ...summary(doc) });
+    return;
+  }
   if (await isSqliteFile(doc.file) || /\.(sqlite3?|db3?|s3db)(?:\.gz)?$/i.test(doc.name)) {
     if (runtime().document !== doc) return;
     doc.documentKind = 'sqlite'; doc.sqliteReady = true;
@@ -263,10 +276,11 @@ async function openFile(remotePath, localPath, remoteRuntime = runtime()) {
     bookmarkKey: `${remote ? remoteRuntime.connectionName : 'local'}:${source}:${attrs.size}:${remote ? attrs.mtime : attrs.mtimeMs}`,
   };
   doc.file = remote || gzip ? path.join(cacheRoot, doc.id + '.log') : localPath;
+  if (/\.(pcap|pcapng|cap)(?:\.gz)?$/i.test(source) || (!remote && !gzip && await isCaptureFile(localPath))) doc.documentKind = 'pcap';
   runtime().document = doc;
   if (!gzip) doc.prefix = await prefixHash(doc);
   let preview = [];
-  if (!gzip && attrs.size) {
+  if (!gzip && attrs.size && doc.documentKind !== 'pcap') {
     const start = 0;
     const previewEnd = Math.min(attrs.size, 256 * 1024);
     const input = remote ? remoteSource(remoteRuntime.sftp, source, start, previewEnd, doc.controller.signal) : fs.createReadStream(source, { start, end: previewEnd - 1 });
@@ -916,6 +930,23 @@ const handlers = {
     return listLocalDirectory(root);
   },
   listLocal: directory => listLocalDirectory(directory),
+  chooseCapture: async () => {
+    const chosen = await dialog.showOpenDialog(win, { title: '打开抓包文件', properties: ['openFile'], filters: [{ name: '抓包文件', extensions: ['pcap', 'pcapng', 'cap', 'gz'] }, { name: '所有文件', extensions: ['*'] }] });
+    if (chosen.canceled || !chosen.filePaths[0]) return null;
+    const file = await fsp.realpath(chosen.filePaths[0]);
+    runtime().localRoots.add(path.dirname(file));
+    return file;
+  },
+  captureRead: (id, options = {}) => {
+    const doc = runtime().document;
+    if (!doc || doc.id !== id || !doc.captureReady) throw new Error('抓包文件尚未就绪或已关闭');
+    return doc.captureSession.query(options);
+  },
+  captureDetail: (id, number) => {
+    const doc = runtime().document;
+    if (!doc || doc.id !== id || !doc.captureReady) throw new Error('抓包文件尚未就绪或已关闭');
+    return doc.captureSession.detail(number);
+  },
   sqliteRead: async (id, table, offset = 0, search = {}) => {
     const doc = runtime().document;
     if (!doc || doc.id !== id || !doc.sqliteReady) throw new Error('SQLite 文件尚未就绪或已关闭');

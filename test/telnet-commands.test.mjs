@@ -18,6 +18,22 @@ test('button colors survive import and invalid colors are rejected', () => {
   data.groups[0].commands[0].color = 'invalid';
   assert.throws(() => parseCommandGroups(JSON.stringify(data), () => 'id'), /颜色/);
 });
+test('device metadata survives import, trims whitespace, and accepts legacy groups', () => {
+  const groups = parseCommandGroups(JSON.stringify({ groups: [
+    { name: '设备命令', device: '  路由器  ', commands: [] },
+    { name: '未分类', device: '   ', commands: [] },
+    { name: '旧配置', commands: [] },
+  ] }), () => 'id');
+  assert.equal(groups[0].device, '路由器');
+  assert.equal(Object.hasOwn(groups[1], 'device'), false);
+  assert.equal(Object.hasOwn(groups[2], 'device'), false);
+});
+test('invalid device metadata is rejected', () => {
+  for (const device of [42, null, {}, 'x'.repeat(101)]) {
+    const data = { groups: [{ name: '命令', device, commands: [] }] };
+    assert.throws(() => parseCommandGroups(JSON.stringify(data), () => 'id'));
+  }
+});
 test('variable commands prompt once per name and substitute literally', async () => {
   const { commandVariables, renderCommand } = await import('../shared/telnet-commands.mjs');
   const text = 'system cmd find / -name "{{map文件名}}" -exec md5sum {} \\;';

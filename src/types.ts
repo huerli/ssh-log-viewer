@@ -8,7 +8,12 @@ export type SessionKind = 'ssh' | 'telnet' | 'local';
 export type WorkspaceTab = { id: SessionId; kind: SessionKind; title: string; connectionName?: string; profileName?: string };
 export type Bookmark = { line: number; note: string; color: string };
 export type SqliteResult = { tables: { name: string; type: string; sql: string | null }[]; columns?: { name: string; type: string; notnull: number; dflt_value: string | null; pk: number }[]; rows?: Record<string, string | number | null>[]; hasMore?: boolean; total?: number; offset?: number };
-export type Doc = { documentKind?: 'sqlite'; id: string; name: string; origin?: string; archive?: string; remote: boolean; compressed: boolean; size: number; ready: boolean; lines: number; bookmarkKey: string; bookmarks: Bookmark[]; preview?: string[] };
+export type CaptureIssue = { code: string; label: string; severity: 'warning' | 'error'; message: string; relatedPacket?: number };
+export type CapturePacket = { number: number; time: number | null; relativeTime: number | null; deltaTime: number | null; source: string; destination: string; sourcePort?: number; destinationPort?: number; protocol: string; length: number; capturedLength: number; info: string; issues: CaptureIssue[] };
+export type CaptureSummary = { format: string; byteOrder: string; timeResolution: string; linkTypes: string[]; packetCount: number; capturedBytes: number; wireBytes: number; startTime: number | null; endTime: number | null; duration: number; protocols: Record<string, number>; warnings: string[]; analysis: { total: number; errors: number; warnings: number; counts: Record<string, number> } };
+export type CaptureResult = { summary: CaptureSummary; rows: CapturePacket[]; total: number; offset: number; hasMore: boolean };
+export type CaptureDetail = { packet: CapturePacket; layers: { name: string; fields: { name: string; value: string }[] }[]; hex: string; ascii: string; truncated: boolean };
+export type Doc = { documentKind?: 'sqlite' | 'pcap'; packetCount?: number; id: string; name: string; origin?: string; archive?: string; remote: boolean; compressed: boolean; size: number; ready: boolean; lines: number; bookmarkKey: string; bookmarks: Bookmark[]; preview?: string[] };
 export type Row = { line: number; position?: number; text: string; truncated?: boolean; displayTruncated?: boolean };
 export type LogFilter = { token: string; count: number; total: number; capped: boolean; query: string };
 export type Entry = { name: string; directory: boolean; size: number; mtime: number };
@@ -28,6 +33,9 @@ declare global {
   const __APP_VERSION__: string;
   interface Window {
     viewer: {
+      chooseCapture(): Promise<string | null>;
+      captureRead(id: string, options?: { offset?: number; limit?: number; protocol?: string; query?: string; issue?: string }): Promise<CaptureResult>;
+      captureDetail(id: string, number: number): Promise<CaptureDetail>;
       sessionInvoke(id: string, method: string, args: unknown[]): Promise<any>;
       sessionClose(id: string): Promise<void>;
       upload(directory: string, files?: string[], overwrite?: boolean): Promise<{ paths: string[]; completedFiles: number; failedFiles: number; errors: string[]; cancelled?: boolean } | null>;
