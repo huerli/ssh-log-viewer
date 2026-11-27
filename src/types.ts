@@ -70,6 +70,8 @@ declare global {
       openFolder(path: string): Promise<void>;
       exportSearchResults(data: SearchResult & { query: string; file?: string; regex: boolean; caseSensitive: boolean; partial: boolean }): Promise<{ path: string; count: number } | null>;
       copyText(text: string): Promise<void>;
+      pasteClipboard(): Promise<void>;
+      readClipboardText(): Promise<string>;
       saveSearchHistory(history: string[]): Promise<string[]>;
       saveTheme(theme: string): Promise<string>;
       saveLogFont(font: LogFont): Promise<LogFont>;

@@ -140,8 +140,70 @@ function SearchHistoryInput({ inputRef, query, onChange, history, onClear }: { i
     {visible && <div className="search-history-dropdown"><div className="search-history-heading"><span>搜索历史</span><button type="button" onClick={() => { onClear(); setOpen(false); inputRef.current?.focus(); }}>清空搜索历史</button></div><div id="search-history-list" role="listbox" aria-label="搜索历史">{history.map((item, index) => <button id={`search-history-${index}`} key={item} type="button" role="option" aria-selected={active === index} title={item} onMouseEnter={() => setActive(index)} onClick={() => choose(item)}>{item}</button>)}</div></div>}
   </div>;
 }
+function SidebarDivider({ side, panelId, collapsed, onToggle }: {
+  side: 'left' | 'right';
+  panelId: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const drag = useRef<{ pointerId: number; startX: number; threshold: number } | null>(null);
+  const [willToggle, setWillToggle] = useState(false);
+  const label = side === 'left' ? '连接栏' : '下载栏';
+  const direction = (side === 'left' ? -1 : 1) * (collapsed ? -1 : 1);
+  const action = collapsed ? '展开' : '收起';
+
+  function crossesThreshold(clientX: number) {
+    return drag.current !== null && (clientX - drag.current.startX) * direction >= drag.current.threshold;
+  }
+
+  function resetDrag() {
+    drag.current = null;
+    setWillToggle(false);
+  }
+
+  return <div
+    className={`sidebar-divider sidebar-divider-${side}`}
+    data-snap={willToggle ? '' : undefined}
+    role="separator"
+    tabIndex={0}
+    aria-orientation="vertical"
+    aria-label={label}
+    aria-controls={panelId}
+    aria-valuenow={collapsed ? 0 : 100}
+    aria-valuetext={collapsed ? '已收起' : '已展开'}
+    title={`向${direction < 0 ? '左' : '右'}拖动以${action}${label}`}
+    onPointerDown={event => {
+      if (!event.isPrimary || event.button !== 0) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      const distanceToEdge = direction < 0 ? event.clientX : window.innerWidth - event.clientX;
+      drag.current = { pointerId: event.pointerId, startX: event.clientX, threshold: Math.min(24, Math.max(4, distanceToEdge - 2)) };
+    }}
+    onPointerMove={event => {
+      if (drag.current?.pointerId === event.pointerId) setWillToggle(crossesThreshold(event.clientX));
+    }}
+    onPointerUp={event => {
+      if (drag.current?.pointerId !== event.pointerId) return;
+      const toggle = crossesThreshold(event.clientX);
+      resetDrag();
+      if (toggle) onToggle();
+    }}
+    onLostPointerCapture={event => {
+      if (drag.current?.pointerId === event.pointerId) resetDrag();
+    }}
+    onKeyDown={event => {
+      if (event.key === 'Escape' && drag.current) {
+        event.currentTarget.releasePointerCapture(drag.current.pointerId);
+        resetDrag();
+      } else if (!drag.current && !event.repeat && (event.key === 'Enter' || event.key === (direction < 0 ? 'ArrowLeft' : 'ArrowRight'))) {
+        event.preventDefault();
+        onToggle();
+      }
+    }}
+  />;
+}
+
 type DownloadNode = { folders: Map<string, DownloadNode>; path?: string; files: { name: string; path: string }[] };
-function DownloadedFiles({ paths, autoExpandPaths, roots, selected, disabled, onOpen, onRefresh, onError, onOpenFolder }: { paths: string[]; autoExpandPaths: string[]; roots: string[]; selected?: string; disabled: boolean; onOpen: (file: string) => void; onRefresh: () => void; onError: (error: string) => void; onOpenFolder: (path: string) => void }) {
+function DownloadedFiles({ panelId, paths, autoExpandPaths, roots, selected, disabled, onOpen, onRefresh, onError, onOpenFolder }: { panelId: string; paths: string[]; autoExpandPaths: string[]; roots: string[]; selected?: string; disabled: boolean; onOpen: (file: string) => void; onRefresh: () => void; onError: (error: string) => void; onOpenFolder: (path: string) => void }) {
   const api = useViewer();
   const [menu, setMenu] = useState<{ path: string; folder: boolean; x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -189,7 +251,7 @@ function DownloadedFiles({ paths, autoExpandPaths, roots, selected, disabled, on
   function render(node: DownloadNode): React.ReactNode {
     return <>{[...node.folders].map(([name, child]) => <details key={name} open={!!filter || expanded.has(child.path || '')} onToggle={e => { const isOpen = e.currentTarget.open; setExpanded(previous => { const next = new Set(previous); if (isOpen) next.add(child.path || ''); else next.delete(child.path || ''); return next; }); }}><summary title={name} onContextMenu={e => { if (child.path) showMenu(e, child.path, true); }}>{name}</summary><div className="download-tree-children">{render(child)}</div></details>)}{node.files.map(file => <button key={file.path} className={`download-tree-file ${selected === file.path ? 'active' : ''}`} title={file.path} disabled={disabled} onContextMenu={e => showMenu(e, file.path, false)} onClick={() => onOpen(file.path)}><span>≡</span><span>{file.name}</span></button>)}</>;
   }
-  return <aside className="downloads-panel" aria-label="已下载文件"><div className="panel-title">已下载文件 <span>{paths.length}</span><button aria-label="刷新已下载文件" onClick={onRefresh}>↻</button></div><input aria-label="筛选已下载文件" placeholder="筛选文件名或文件夹…" value={filter} onChange={e => setFilter(e.target.value)} /><div className="download-tree">{render(tree)}{!tree.folders.size && !tree.files.length && <p className="hint">{paths.length ? '没有匹配的文件' : '暂无已下载文件'}</p>}</div>{menu && <div ref={menuRef} className="text-context-menu" role="menu" aria-label="已下载文件操作" style={{ left: Math.max(4, Math.min(menu.x, window.innerWidth - 244)), top: Math.max(4, Math.min(menu.y, window.innerHeight - 110)) }}>
+  return <aside id={panelId} className="downloads-panel" aria-label="已下载文件"><div className="panel-title">已下载文件 <span>{paths.length}</span><button aria-label="刷新已下载文件" onClick={onRefresh}>↻</button></div><input aria-label="筛选已下载文件" placeholder="筛选文件名或文件夹…" value={filter} onChange={e => setFilter(e.target.value)} /><div className="download-tree">{render(tree)}{!tree.folders.size && !tree.files.length && <p className="hint">{paths.length ? '没有匹配的文件' : '暂无已下载文件'}</p>}</div>{menu && <div ref={menuRef} className="text-context-menu" role="menu" aria-label="已下载文件操作" style={{ left: Math.max(4, Math.min(menu.x, window.innerWidth - 244)), top: Math.max(4, Math.min(menu.y, window.innerHeight - 110)) }}>
     <button role="menuitem" autoFocus onClick={() => { const folder = menu.folder ? menu.path : parentFolder(menu.path); setMenu(null); void api.openFolder(folder).catch(error => onError(String(error))); }}>在资源管理器中打开</button>
     <button role="menuitem" disabled={disabled} onClick={() => { const folder = menu.folder ? menu.path : parentFolder(menu.path); setMenu(null); onOpenFolder(folder); }}>在左侧打开</button>
   </div>}</aside>;
@@ -198,7 +260,14 @@ const palette = ['#fbbf24', '#60a5fa', '#c084fc', '#34d399'];
 
 function Highlight({ text, words, sensitive }: { text: string; words: string[]; sensitive: boolean }) {
   const visible = text.slice(0, 12000);
-  const tokens = [...new Set(words.filter(Boolean))].sort((a, b) => b.length - a.length);
+  const seen = new Set<string>();
+  const tokens = words.filter(word => {
+    if (!word) return false;
+    const key = sensitive ? word : word.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a, b) => b.length - a.length);
   if (!tokens.length) return <>{visible}{text.length > visible.length && ' … [超长行显示已截断]'}</>;
   const escaped = tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const parts = visible.split(new RegExp(`(${escaped.join('|')})`, sensitive ? 'g' : 'gi'));
@@ -217,8 +286,10 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
   onBottomChange(bottom: boolean): void;
 }) {
   const api = useViewer();
+  const { active: tabActive } = useSession();
   const viewport = useRef<HTMLDivElement>(null);
   const horizontalJump = useRef(-1);
+  const scrollPosition = useRef({ top: 0, left: 0 });
   const scrollLayout = useRef<{ id: string; token: number; ready: boolean; filter?: string; maxStart: number; range: number } | null>(null);
   const [scroll, setScroll] = useState(0);
   const [height, setHeight] = useState(600);
@@ -231,22 +302,27 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
   const needed = Math.max(0, start - 30);
   useEffect(() => { setRows([]); }, [doc.id, filter?.token]);
   useEffect(() => {
-    const observer = new ResizeObserver(entries => setHeight(entries[0].contentRect.height));
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.height > 0) setHeight(entry.contentRect.height);
+    });
     if (viewport.current) observer.observe(viewport.current);
     return () => observer.disconnect();
   }, []);
   useLayoutEffect(() => {
-    const view = viewport.current;
     const previous = scrollLayout.current;
     const range = Math.max(0, totalHeight - height);
     const explicitJump = !previous || previous.id !== doc.id || previous.token !== jump.token || previous.ready !== doc.ready || previous.filter !== filter?.token;
     // A resize (including horizontal scrollbar changes) must not replay the last jump.
-    const line = explicitJump ? jump.line : (view?.scrollTop || 0) / Math.max(1, previous.range) * previous.maxStart;
+    const line = explicitJump ? jump.line : scrollPosition.current.top / Math.max(1, previous.range) * previous.maxStart;
     const top = Math.min(maxStart, Math.max(0, line)) / Math.max(1, maxStart) * range;
     scrollLayout.current = { id: doc.id, token: jump.token, ready: doc.ready, filter: filter?.token, maxStart, range };
-    if (view) view.scrollTop = top;
+    scrollPosition.current.top = top;
+    if (tabActive && viewport.current) viewport.current.scrollTop = top;
     setScroll(top);
-  }, [jump, doc.id, doc.ready, filter?.token, rowHeight, height]);
+  }, [jump, doc.id, doc.ready, filter?.token, rowHeight, height, tabActive]);
+  useLayoutEffect(() => {
+    if (tabActive && viewport.current) viewport.current.scrollLeft = scrollPosition.current.left;
+  }, [tabActive]);
   useEffect(() => {
     let active = true;
     if (!doc.ready) { setRows((doc.preview || []).map((text, line) => ({ text, line }))); return; }
@@ -258,7 +334,7 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
   useLayoutEffect(() => {
     const view = viewport.current;
     const content = view?.querySelector(`[data-line="${jump.line}"] .line-content`);
-    if (!view || !content || !jump.query || horizontalJump.current === jump.token) return;
+    if (!tabActive || !view || !content || !jump.query || horizontalJump.current === jump.token) return;
     const text = content.textContent || '';
     let at = -1, length = 0;
     try {
@@ -288,7 +364,7 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
       }
       offset += size;
     }
-  }, [rows, jump, height]);
+  }, [rows, jump, height, tabActive]);
   const flashJump = jump.token > 0;
   const shown = rows.filter(row => (row.position ?? row.line) >= start && (row.position ?? row.line) <= start + visibleCount + 1);
   return <div className="log-viewport" ref={viewport} onCopy={e => {
@@ -302,7 +378,13 @@ function LogView({ doc, words, sensitive, bookmarks, jump, filter, onContext, on
     const text = lines.length ? lines.map(line => line.textContent || '').join('\n') : fragment.textContent || '';
     e.preventDefault();
     e.clipboardData.setData('text/plain', text);
-  }} onScroll={e => { const view = e.currentTarget; setScroll(view.scrollTop); onBottomChange(view.scrollHeight - view.clientHeight - view.scrollTop <= 4); }}>
+  }} onScroll={e => {
+    const view = e.currentTarget;
+    if (!tabActive || !view.clientHeight) return;
+    scrollPosition.current = { top: view.scrollTop, left: view.scrollLeft };
+    setScroll(view.scrollTop);
+    onBottomChange(view.scrollHeight - view.clientHeight - view.scrollTop <= 4);
+  }}>
     <div style={{ height: totalHeight, position: 'relative' }}>
       <div className="log-rows" style={{ top: Math.min(scroll, totalHeight - height), height, overflow: 'hidden', overflowAnchor: 'none' }}>
         {shown.map(row => {
@@ -354,7 +436,7 @@ function SearchRows({ results, onJump, rowHeight, searching, onCopy, onError }: 
   }
   async function copy(text: string) {
     setCopyMenu(null);
-    try { await api.copyText(text); onCopy(); } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    try { await api.copyText(text); window.dispatchEvent(new Event('viewer-copied')); onCopy(); } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
   }
   const matches = results?.matches || [];
   const start = Math.max(0, Math.floor(top / rowHeight) - 6);
@@ -378,15 +460,6 @@ function App({ seed }: { seed?: SessionSeed }) {
   const connectButton = useRef<HTMLButtonElement>(null);
   const sshConnectLock = useRef(false);
   const lastSshProfile = useRef<Profile | undefined>(seed?.kind === 'ssh' ? seed.profile : undefined);
-  useEffect(() => {
-    if (!settingsReady || !seed || autoStarted.current === seed) return;
-    autoStarted.current = seed;
-    if (seed.kind === 'ssh') connectButton.current?.click();
-    else if (seed.kind === 'log') {
-      if (seed.source === 'remote') setFileSource('remote');
-      void run(() => seed.source ? openLogFile(seed.path, seed.source, seed.line, false, undefined, seed.sourceSession) : selectLocal(seed.path));
-    }
-  }, [settingsReady, seed]);
   const [telnetPage, setTelnetPage] = useState(seed?.kind === 'ssh' || seed?.kind === 'telnet');
   const [featureEnabled, setFeatureEnabled] = useState({ ssh: false, telnet: true });
   const [terminalMode, setTerminalMode] = useState<'ssh' | 'telnet'>(seed?.kind === 'ssh' ? 'ssh' : 'telnet');
@@ -475,7 +548,7 @@ function App({ seed }: { seed?: SessionSeed }) {
   const [reliableDbOpen, setReliableDbOpen] = useState(false);
   const opening = useRef(false);
   const [openingState, setOpeningState] = useState(false);
-  const [message, setMessage] = useState('就绪 · 连接服务器或打开本地日志');
+  const [message, setMessage] = useState('就绪');
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [searchHistory, setSearchHistory] = useState(readSearchHistory);
@@ -651,7 +724,7 @@ function App({ seed }: { seed?: SessionSeed }) {
     try {
       const response = await api.filter(doc.id, text, sensitive, token);
       if (searchToken.current !== token) return;
-      setFilter(response); highlightWord(text); go(0);
+      setFilter(response); setSuppressedHighlights(previous => previous.filter(word => !sameWord(word, text))); go(0);
       setMessage(`筛选完成 · ${response.total.toLocaleString()} 个匹配行${response.capped ? ' · 仅展示前 100 万行' : ''}`);
     } catch (e) { if (searchToken.current === token) fail(e); }
     finally { if (searchToken.current === token) setFiltering(false); }
@@ -812,6 +885,27 @@ function App({ seed }: { seed?: SessionSeed }) {
     } catch (e) { setDoc(null); docRef.current = null; setFollowing(false); followingRef.current = false; fail(e); }
     finally { opening.current = false; setOpeningState(false); pendingEvents.current = []; }
   }
+  useEffect(() => {
+    if (!settingsReady || !seed || autoStarted.current === seed || openingState) return;
+    autoStarted.current = seed;
+    if (seed.kind === 'ssh') connectButton.current?.click();
+    else if (seed.kind === 'log') {
+      if (seed.source === 'remote') {
+        setFileSource('remote');
+        const current = docRef.current;
+        if (current?.remote && current.name === seed.path) {
+          if (seed.line !== undefined) {
+            if (current.ready) goOriginal(seed.line);
+            else pendingJump.current = seed.line;
+          }
+          return;
+        }
+        void open(() => api.openRemoteFromSession(seed.path, seed.sourceSession!), seed.line);
+      } else {
+        void run(() => seed.source ? openLogFile(seed.path, seed.source, seed.line) : selectLocal(seed.path));
+      }
+    }
+  }, [settingsReady, seed, openingState]);
   async function search(text = query, useRegex = regex) {
     text = text.trim();
     if (captureMode || !text || opening.current || (searchScope === 'folder' && (!localListing || !!patternError)) || (searchScope === 'current' && !doc?.ready) || (searchScope === 'extracted' && !extractedPaths.length) || (searchScope === 'remote' && (!connection || !activePattern))) return;
@@ -824,6 +918,10 @@ function App({ seed }: { seed?: SessionSeed }) {
       setFilter(null);
     }
     setResultContext({ query: text, file: doc?.name || '', regex: useRegex, caseSensitive: sensitive, partial: true });
+    if (!useRegex) {
+      const terms = text.split('*').map(part => part.trim()).filter(Boolean).slice(0, 32);
+      if (terms.length) setSuppressedHighlights(previous => previous.filter(word => !terms.some(term => sameWord(term, word))));
+    }
     const token = crypto.randomUUID(); searchToken.current = token; setSearching(true); setFiltering(false); setResults(null); setSideTab('search'); setError('');
     try {
       if (text.length > 2048) throw new Error('搜索内容不得超过 2048 字符');
@@ -910,7 +1008,6 @@ function App({ seed }: { seed?: SessionSeed }) {
     if (regex || !query) return;
     const terms = query.split('*').map(part => part.trim()).filter(Boolean).slice(0, 32);
     if (!terms.length) return;
-    setExtraHighlights(previous => [...new Set([...previous, ...terms])].slice(-32));
     setSuppressedHighlights(previous => previous.filter(word => !terms.some(term => sameWord(term, word))));
   }
   async function navigateResult(direction: number) {
@@ -963,7 +1060,10 @@ function App({ seed }: { seed?: SessionSeed }) {
   const matchedArchiveCount = visibleEntries.filter(entry => !entry.directory && /\.(gz|zip|tgz|tar)$/i.test(entry.name)).length;
   const selectedEntry = browseEntries.find(entry => join(browseDirectory, entry.name) === selectedFile);
   const canExtractSelection = Boolean(selectedEntry && !selectedEntry.directory && /\.(gz|zip|tgz|tar)$/i.test(selectedEntry.name));
-  const fileBrowser = (featureEnabled.ssh || localListing) ? <><div className="panel-title files-title">{localMode ? '本地文件' : '远程文件'} <div className="file-source-controls"><select aria-label="文件来源" value={fileSource} onChange={e => { const source = e.target.value as 'remote' | 'local'; setFileSource(source); setSelectedFile(''); setFilePattern(''); setFilenameFromSelection(false); setSelectionListPattern(''); setSearchScope(source === 'local' ? 'folder' : 'current'); }}><option value="remote">远程</option><option value="local" disabled={!localListing}>本地</option></select><button disabled={!canBrowse} onClick={() => void run(() => browse(browseDirectory))}>↻</button></div></div>
+  const leftPanelId = slotId(session.id, 'left-panel');
+  const rightPanelId = slotId(session.id, 'downloads-panel');
+  const hasLeftPanel = featureEnabled.ssh || featureEnabled.telnet || Boolean(localListing);
+  const fileBrowser = (featureEnabled.ssh || localListing) ? <section className="file-browser" aria-label={localMode ? '本地文件' : '远程文件'}><div className="panel-title files-title">{localMode ? '本地文件' : '远程文件'} <div className="file-source-controls"><select aria-label="文件来源" value={fileSource} onChange={e => { const source = e.target.value as 'remote' | 'local'; setFileSource(source); setSelectedFile(''); setFilePattern(''); setFilenameFromSelection(false); setSelectionListPattern(''); setSearchScope(source === 'local' ? 'folder' : 'current'); }}><option value="remote">远程</option><option value="local" disabled={!localListing}>本地</option></select><button aria-label="刷新文件列表" disabled={!canBrowse} onClick={() => void run(() => browse(browseDirectory))}>↻</button></div></div>
         <form className="path-bar" onSubmit={e => { e.preventDefault(); setPathSuggestionsOpen(false); void run(() => browse(localMode ? localPathInput : pathInput)); }}>
           <div className="path-input-combo" onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setPathSuggestionsOpen(false); }} onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); setPathSuggestionsOpen(false); } }}>
             <input autoComplete="off" aria-label={localMode ? '本地路径' : '远程路径'} aria-expanded={!localMode && pathSuggestionsOpen} aria-controls={!localMode ? slotId(session.id, 'path-suggestions') : undefined}
@@ -992,17 +1092,30 @@ function App({ seed }: { seed?: SessionSeed }) {
           {canBrowse && <button className="file-entry" disabled={localMode && browseDirectory === localListing?.root} onClick={() => void run(() => browse(join(browseDirectory, '..')))}>↰ 上级目录</button>}{visibleEntries.map(entry => <button key={entry.name} className={`file-entry ${selectedFile === join(browseDirectory, entry.name) ? 'selected' : ''}`} title={`${entry.name}\n${new Date(entry.mtime * 1000).toLocaleString()}`} onClick={() => { setSelectedFile(join(browseDirectory, entry.name)); if (!entry.directory) { setSelectionListPattern(activePattern); setFilePattern(entry.name); setFilenameFromSelection(true); } }} onDoubleClick={() => entry.directory ? void run(() => browse(join(browseDirectory, entry.name))) : void openListedFile(join(browseDirectory, entry.name))}><span className={entry.directory ? 'folder' : 'file'}>{entry.directory ? '▸' : '≡'}</span><span>{entry.name}</span><small>{entry.directory ? '' : size(entry.size)}</small></button>)}{!canBrowse && <p className="empty-inline">{localMode ? '请打开本地文件夹' : '连接后浏览远程目录'}</p>}{canBrowse && !visibleEntries.length && <p className="empty-inline">没有匹配的文件</p>}</div>
         {task && <div className="task-card"><strong>{task.kind} · {task.state === 'running' ? '进行中' : task.state === 'done' ? '完成' : task.state === 'cancelled' ? '已取消' : '失败'}</strong>{task.files !== undefined && <small>{task.fileIndex ? `${task.fileIndex}/${task.files} · ${task.phase || ''} · ${task.file || ''}` : `共 ${task.files} 个文件`} · 成功 {task.completedFiles || 0} · 失败 {task.failedFiles || 0}</small>}{task.currentBytes !== undefined && task.state === 'running' && <small>当前文件 {size(task.currentBytes)}{task.currentSize ? ` / ${size(task.currentSize)}` : ''}</small>}<span>{size(task.bytes)}{task.size ? ` / ${size(task.size)}` : ''}</span>{task.origin && <small title={task.origin}>来源：{task.origin}</small>}{task.destination && <small>{task.destination}</small>}{task.error && <small>{task.error}</small>}{task.state !== 'running' && task.kind !== '上传' && extractedPaths.length > 0 && <select aria-label={task.kind?.includes('解压') ? '打开解压文件' : '打开已下载文件'} value="" onChange={e => e.target.value && void openLogFile(e.target.value, 'extracted', undefined, false, 'extracted')}><option value="">打开已下载/解压文件…</option>{extractedPaths.map(file => <option key={file} value={file}>{file.split('/').pop()}</option>)}</select>}{task.state === 'running' && <button onClick={() => void run(() => api.cancelTask(task.id!))}>取消任务</button>}</div>}
         <div className="file-actions"><button title="选择本地文件上传到当前远程目录，也可拖入整个文件夹" disabled={localMode || !connection || uploading || task?.state === 'running'} onClick={() => void run(() => uploadLocalFiles())}>{uploading ? '上传中…' : '上传'}</button><button disabled={!selectedFile || openingState} onClick={() => void openListedFile(selectedFile)}>查看</button><button disabled={localMode || !selectedFile} onClick={() => void run(async () => { const result = await api.download(selectedFile) as { destination: string } | null; if (result) { setExtractedPaths([result.destination]); setSearchScope('extracted'); } })}>下载</button><button disabled={task?.state === 'running' || (localMode && !selectedFile ? !!patternError || !matchedArchiveCount : !canExtractSelection)} title={localMode && !selectedFile ? '解压当前列表中所有匹配的压缩文件' : '解压选中的压缩文件'} onClick={() => void (localMode && !selectedFile ? extractLocalMatches() : extract(selectedFile))}>{localMode && !selectedFile ? '解压匹配' : '解压'}</button></div>
-        </> : null;
+        </section> : null;
 
   if (!api) return <div className="browser-warning">请通过桌面程序启动。<code>npm run build && npm start</code></div>;
 
   return <div className="app" style={{ '--log-font-family': logFontFamily(font.family), '--log-font-size': `${font.size}px`, '--log-line-height': `${logLineHeight(font.size)}px`, '--result-line-height': `${resultLineHeight(font.size)}px` } as React.CSSProperties}>
-    <header className="header"><div className="brand"><span className="brand-icon">⌁</span><div><strong>SSH Log Viewer</strong><small>远程日志工作台 · v{__APP_VERSION__}</small></div></div><div className="header-actions"><button disabled={openingState} onClick={() => void run(async () => { const file = await window.viewer.chooseCapture(); if (file) await openLogFile(file, 'local'); })}>抓包查看</button><button onClick={() => setReliableDbOpen(true)}>可靠传输 DB</button><button onClick={() => setDirectorySettings(true)}>设置</button></div></header>
+    <header className="header">
+      <div className="brand">
+        <span className="brand-icon" aria-hidden="true">&gt;_</span>
+        <strong>SSH Log Viewer</strong>
+        <small>v{__APP_VERSION__}</small>
+      </div>
+      {session.tabBar}
+      <div className="header-actions">
+        <button disabled={openingState} onClick={() => void run(async () => { const file = await window.viewer.chooseCapture(); if (file) await openLogFile(file, 'local'); })}>抓包查看</button>
+        <button onClick={() => setReliableDbOpen(true)}>可靠传输 DB</button>
+        <button onClick={() => setDirectorySettings(true)}>设置</button>
+      </div>
+    </header>
     <UpdateControl settingsOpen={directorySettings} />
     {reliableDbOpen && <ReliableDbViewer onClose={() => setReliableDbOpen(false)} />}
     <div className={`workspace${session.leftCollapsed ? ' left-collapsed' : ''}${session.rightCollapsed ? ' right-collapsed' : ''}`}>
-      <aside className="left-panel" style={{ display: featureEnabled.ssh || featureEnabled.telnet || localListing ? undefined : 'none' }}>
-        {featureEnabled.ssh && <><div className="panel-title ssh-panel-title">SSH <span id={slotId(session.id, "ssh-status-slot")} /></div>
+      <aside id={leftPanelId} className="left-panel" aria-label="连接与文件" hidden={!hasLeftPanel}>
+        {(featureEnabled.ssh || featureEnabled.telnet) && <section className="connections-panel" aria-label="连接">
+        {featureEnabled.ssh && <div className="ssh-connection"><div className="panel-title ssh-panel-title">SSH <span id={slotId(session.id, "ssh-status-slot")} /></div>
         <select aria-label="已保存连接" disabled={!featureEnabled.ssh} value={selectedProfile} onChange={e => void run(() => selectProfile(e.target.value))}>
           <option value="">新建连接…</option>
           {[false, true].map(viaJump => {
@@ -1027,18 +1140,29 @@ function App({ seed }: { seed?: SessionSeed }) {
           <small className="hint">{profile.auth === 'password' ? '勾选后，保存配置或连接成功时加密保存密码。' : '私钥口令仅用于本次连接，不保存。'}</small>
           <div className="connection-config-actions"><button className="danger-button" disabled={!selectedProfile || connecting} onClick={() => void run(deleteCurrentProfile)}>删除连接</button><button className="save-connection primary" onClick={() => void run(async () => { await saveCurrentProfile(); setMessage('连接配置已保存'); setConnectionSettings(false); })}>保存配置</button></div>
         </div>}
-        </>}
+        </div>}
         <div id={slotId(session.id, "telnet-connection-slot")} className={featureEnabled.ssh ? undefined : 'standalone-telnet'} />
-        {session.id === 'default' && !localMode && <div ref={session.setFileBrowserHost} style={{ display: 'contents' }} />}
-        {(session.id === 'default' && !localMode && session.fileBrowserOwner) || (session.id === session.fileBrowserOwner && session.fileBrowserHost) ? null : fileBrowser}
+        </section>}
+        {session.id === session.fileBrowserTab && !localMode && <div ref={session.setFileBrowserHost} style={{ display: 'contents' }} />}
+        {(session.id === session.fileBrowserTab && !localMode && session.fileBrowserOwner) || (session.id === session.fileBrowserOwner && session.fileBrowserHost) ? null : fileBrowser}
         {session.id === session.fileBrowserOwner && session.fileBrowserHost && createPortal(fileBrowser, session.fileBrowserHost)}
       </aside>
-      <button className="sidebar-toggle sidebar-toggle-left" aria-label={session.leftCollapsed ? '展开连接栏' : '收起连接栏'} title={session.leftCollapsed ? '展开连接栏' : '收起连接栏'} aria-expanded={!session.leftCollapsed} onClick={session.toggleLeft}>{session.leftCollapsed ? '›' : '‹'}</button>
+      {hasLeftPanel && <SidebarDivider side="left" panelId={leftPanelId} collapsed={session.leftCollapsed} onToggle={session.toggleLeft} />}
       <main className={'main-panel unified-terminal ' + (telnetPage ? 'show-telnet' : 'show-log')}>
         <div className="log-view-section">
-        <div className="document-bar session-document-bar">{session.tabBar}{doc && <span className="session-document-meta" title={doc.name}>{size(doc.size)} · {doc.ready ? captureMode ? `${doc.packetCount?.toLocaleString() ?? 0} 个包` : sqliteMode ? 'SQLite' : `${doc.lines.toLocaleString()} 行` : '读取中'}</span>}</div>
-        {!captureMode && !sqliteMode && <><form className="search-bar" onSubmit={e => { e.preventDefault(); void search((e.currentTarget.elements.namedItem('search-query') as HTMLInputElement)?.value ?? query, regex); }}><span>⌕</span><SearchHistoryInput inputRef={searchInput} query={query} onChange={setQuery} history={searchHistory} onClear={() => void persistSearchHistory([]).catch(fail)} /><label><input type="checkbox" checked={sensitive} onChange={e => setSensitive(e.target.checked)} />Aa</label><label><input type="checkbox" checked={regex} onChange={e => setRegex(e.target.checked)} />正则</label><button className="primary" disabled={(searchScope === 'folder' && (!localListing || !!patternError)) || (searchScope === 'current' && !doc?.ready) || (searchScope === 'extracted' && !extractedPaths.length) || (searchScope === 'remote' && (!activePattern || !connection || !!patternError || !matchedFileCount)) || openingState || !query || searching || filtering}>搜索全文</button>{(searching || filtering) && <button type="button" onClick={() => void cancelSearch()}>取消</button>}</form>
-        <div className="search-scope"><label>搜索范围<select aria-label="搜索范围" value={searchScope} onChange={e => { setSearchScope(e.target.value as 'current' | 'extracted' | 'remote' | 'folder'); }}><option value="current">当前打开文件{doc && !doc.remote ? '（本地）' : ''}</option><option value="extracted" disabled={!extractedPaths.length}>已下载/解压文件（本地 {extractedPaths.length} 个）</option><option value="folder" disabled={!localListing || !localMode}>本地文件夹（当前目录匹配文件）</option><option value="remote" disabled={localMode || !connection || !activePattern}>匹配文件（优先本地）</option></select></label><small>{searchScope === 'folder' ? '搜索本地当前目录的匹配文件，支持普通日志和 .gz；不包含子目录' : searchScope === 'extracted' ? '直接搜索已下载或解压的本地文件，不重新下载' : searchScope === 'remote' ? '优先使用该连接已下载的匹配文件；无本地副本时读取远程' : '仅搜索当前打开的日志'} · 优先搜索范围内当前打开的文件 · 普通搜索支持 * 通配</small><label className="scope-highlight">高亮<input value={rules} onChange={e => { setRules(e.target.value); setSuppressedHighlights([]); }} placeholder="多个关键词用逗号分隔" /></label><div className="toolbar-right"><button onClick={() => { setError(''); setFontDraft(font); setFontSettings(true); }}>字体设置</button><button disabled={!doc} onClick={() => go(0)}>首行</button><button disabled={!doc} onClick={() => go(doc?.ready ? doc.lines : doc?.preview?.length || 0)}>末尾</button><input className="jump-input" aria-label="跳转行号" placeholder="行号" value={jumpInput} onChange={e => setJumpInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && doc?.ready) goOriginal(Math.max(0, (Number(jumpInput) || 1) - 1)); }} /><button disabled={!doc?.ready} onClick={() => goOriginal(Math.max(0, (Number(jumpInput) || 1) - 1))}>跳转</button><button className={following ? 'primary' : ''} aria-pressed={following} disabled={!doc?.ready || doc.compressed || openingState || !!filter || filtering} onClick={() => { const value = !following; setFollowing(value); followingRef.current = value; void run(async () => { try { await api.follow(value); if (value && doc) go(doc.lines); } catch (error) { setFollowing(false); followingRef.current = false; throw error; } }); }}>{following ? '停止跟随' : '实时跟随'}</button></div></div></>}
+        {!captureMode && !sqliteMode && <section className="search-tools" aria-label="全文搜索">
+          <form className="search-bar" onSubmit={e => { e.preventDefault(); void search((e.currentTarget.elements.namedItem('search-query') as HTMLInputElement)?.value ?? query, regex); }}><span className="search-icon" aria-hidden="true" /><SearchHistoryInput inputRef={searchInput} query={query} onChange={setQuery} history={searchHistory} onClear={() => void persistSearchHistory([]).catch(fail)} /><label title="区分大小写"><input type="checkbox" aria-label="区分大小写" checked={sensitive} onChange={e => setSensitive(e.target.checked)} />Aa</label><label><input type="checkbox" checked={regex} onChange={e => setRegex(e.target.checked)} />正则</label><button className="primary" disabled={(searchScope === 'folder' && (!localListing || !!patternError)) || (searchScope === 'current' && !doc?.ready) || (searchScope === 'extracted' && !extractedPaths.length) || (searchScope === 'remote' && (!activePattern || !connection || !!patternError || !matchedFileCount)) || openingState || !query || searching || filtering}>搜索全文</button>{(searching || filtering) && <button type="button" onClick={() => void cancelSearch()}>取消</button>}</form>
+          <div className="search-scope"><label title={searchScope === 'folder' ? '搜索本地当前目录的匹配文件，支持普通日志和 .gz；不包含子目录' : searchScope === 'extracted' ? '直接搜索已下载或解压的本地文件，不重新下载' : searchScope === 'remote' ? '优先使用该连接已下载的匹配文件；无本地副本时读取远程' : '仅搜索当前打开的日志'}>搜索范围<select aria-label="搜索范围" value={searchScope} onChange={e => { setSearchScope(e.target.value as 'current' | 'extracted' | 'remote' | 'folder'); }}><option value="current">当前打开文件{doc && !doc.remote ? '（本地）' : ''}</option><option value="extracted" disabled={!extractedPaths.length}>已下载/解压文件（本地 {extractedPaths.length} 个）</option><option value="folder" disabled={!localListing || !localMode}>本地文件夹（当前目录匹配文件）</option><option value="remote" disabled={localMode || !connection || !activePattern}>匹配文件（优先本地）</option></select></label><label className="scope-highlight">高亮<input value={rules} onChange={e => { setRules(e.target.value); setSuppressedHighlights([]); }} placeholder="多个关键词用逗号分隔" /></label>{extraHighlights.length > 0 && <button type="button" className="clear-extra-highlights" title={`清除右键手动高亮：${extraHighlights.join('、')}`} onClick={() => setExtraHighlights([])}>清除高亮 ({extraHighlights.length})</button>}</div>
+        </section>}
+        <div className="document-bar">
+          {doc && <div className="session-document-info">
+            <strong title={doc.archive ? `${doc.name}\n来源压缩文件：${doc.archive}` : doc.name}>{doc.remote ? doc.name : doc.name.split(/[\\/]/).pop()}</strong>
+            {doc.origin && <span className="source-origin" title={doc.origin}>{doc.origin}</span>}
+            {doc.archive && <span className="source-origin" title={doc.archive}>本地解压 · {doc.archive.split(/[\\/]/).pop()}</span>}
+            <span className="session-document-meta">{size(doc.size)} / {doc.ready ? captureMode ? `${doc.packetCount?.toLocaleString() ?? 0} 个包` : sqliteMode ? 'SQLite' : `${doc.lines.toLocaleString()} 行` : '读取中'}</span>
+          </div>}
+          {!captureMode && !sqliteMode && <div className="toolbar-right" role="group" aria-label="日志工具"><button onClick={() => { setError(''); setFontDraft(font); setFontSettings(true); }}>字体设置</button><button disabled={!doc} onClick={() => go(0)}>首行</button><button disabled={!doc} onClick={() => go(doc?.ready ? doc.lines : doc?.preview?.length || 0)}>末尾</button><input className="jump-input" aria-label="跳转行号" placeholder="行号" value={jumpInput} onChange={e => setJumpInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && doc?.ready) goOriginal(Math.max(0, (Number(jumpInput) || 1) - 1)); }} /><button disabled={!doc?.ready} onClick={() => goOriginal(Math.max(0, (Number(jumpInput) || 1) - 1))}>跳转</button><button className={following ? 'primary' : ''} aria-pressed={following} disabled={!doc?.ready || doc.compressed || openingState || !!filter || filtering} onClick={() => { const value = !following; setFollowing(value); followingRef.current = value; void run(async () => { try { await api.follow(value); if (value && doc) go(doc.lines); } catch (error) { setFollowing(false); followingRef.current = false; throw error; } }); }}>{following ? '停止跟随' : '实时跟随'}</button></div>}
+        </div>
         {filter && <div className="filter-bar"><span title={filter.query}>筛选：{filter.query} · {filter.total.toLocaleString()} 个匹配行{filter.capped ? '（仅展示前 100 万行）' : ''}</span><button onClick={clearFilter}>取消筛选</button></div>}
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError('')}>×</button></div>}
         {(['ssh', 'telnet'] as const).map(mode => <div key={mode} id={slotId(session.id, mode + '-display-slot')} className="shared-telnet-display" style={{ display: telnetPage && terminalMode === mode ? 'flex' : 'none' }} />)}
@@ -1047,16 +1171,23 @@ function App({ seed }: { seed?: SessionSeed }) {
           onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingLog(false); }}
           onDrop={event => void dropLocal(event)}>
         {draggingLog && <div className="log-drop-hint">松开以打开本地文件或文件夹</div>}
-        {doc?.documentKind === 'pcap' ? <CaptureViewer key={doc.id} doc={doc} loadError={!doc.ready ? error : undefined} /> : doc?.documentKind === 'sqlite' ? <SqliteViewer key={doc.id} doc={doc} /> : doc && reliableDbSlotSize(doc.name) ? <InlineReliableDbViewer key={doc.id} doc={doc} /> : doc ? <LogView selectedLine={selectedLine} onBottomChange={bottom => { atBottomRef.current = bottom; }} key={doc.id} rowHeight={logLineHeight(font.size)} doc={doc} filter={filter} onContext={(text, x, y) => setContextMenu({ text, x, y })} words={[...rules.split(/[,，]/).map(s => s.trim().slice(0, 200)).filter(Boolean).slice(0, 12), ...extraHighlights, ...(!regex && query && query.length <= 2048 ? query.split('*').map(part => part.trim()).filter(Boolean) : [])].filter(word => !suppressedHighlights.some(excluded => sameWord(excluded, word)))} sensitive={sensitive} bookmarks={bookmarks} jump={jump} onSelect={line => { setSelectedLine(line); setSideTab('marks'); setBottomOpen(true); }} onError={setError} /> : <div className="welcome"><div className="welcome-symbol">⌁</div><h1>让远程日志，触手可及</h1><p>连接 SSH 服务器，双击文件开始查看。<br />将本地文件或文件夹拖入此处即可打开。</p><div className="features"><span>分块读取</span><span>全文搜索</span><span>高亮与标注</span><span>下载与解压</span></div></div>}</div>}
-      {!captureMode && !sqliteMode && <section className={`bottom-panel ${bottomOpen ? 'expanded' : 'collapsed'}`} aria-label="搜索结果与标注"><div className="side-tabs"><button className={sideTab === 'search' ? 'active' : ''} onClick={() => { setSideTab('search'); setBottomOpen(true); }}>搜索结果 {results ? `(${results.count})` : ''}</button><button className={sideTab === 'marks' ? 'active' : ''} onClick={() => { setSideTab('marks'); setBottomOpen(true); }}>标注 ({bookmarks.length})</button><button disabled={!results?.matches.length || exporting} title="导出当前已展示的匹配结果（含行号和日志内容，不含来源文件名），支持 TXT、CSV、JSON" onClick={() => void exportResults()}>{exporting ? '导出中…' : '导出结果'}</button><button className="panel-toggle" aria-label={bottomOpen ? '收起结果面板' : '展开结果面板'} onClick={() => setBottomOpen(value => !value)}>{bottomOpen ? '收起 ▾' : '展开 ▴'}</button></div>
+        {doc?.documentKind === 'pcap' ? <CaptureViewer key={doc.id} doc={doc} loadError={!doc.ready ? error : undefined} /> : doc?.documentKind === 'sqlite' ? <SqliteViewer key={doc.id} doc={doc} /> : doc && reliableDbSlotSize(doc.name) ? <InlineReliableDbViewer key={doc.id} doc={doc} /> : doc ? <LogView selectedLine={selectedLine} onBottomChange={bottom => { atBottomRef.current = bottom; }} key={doc.id} rowHeight={logLineHeight(font.size)} doc={doc} filter={filter} onContext={(text, x, y) => setContextMenu({ text, x, y })} words={[...rules.split(/[,，]/).map(s => s.trim().slice(0, 200)).filter(Boolean).slice(0, 12), ...extraHighlights, ...(filter?.query ? [filter.query] : []), ...(!regex && query && query.length <= 2048 ? query.split('*').map(part => part.trim()).filter(Boolean) : [])].filter(word => !suppressedHighlights.some(excluded => sameWord(excluded, word)))} sensitive={sensitive} bookmarks={bookmarks} jump={jump} onSelect={line => { setSelectedLine(line); setSideTab('marks'); setBottomOpen(true); }} onError={setError} /> : <div className="welcome">
+          <div className="welcome-drop">
+            <span className="welcome-symbol" aria-hidden="true" />
+            <h1>拖入文件或文件夹</h1>
+            <p>{featureEnabled.ssh ? '也可以连接 SSH 后双击远程文件，或从下载栏选择文件。' : '也可以从下载栏选择文件。'}</p>
+          </div>
+        </div>}</div>}
+      {!captureMode && !sqliteMode && <section className={`bottom-panel ${bottomOpen ? 'expanded' : 'collapsed'}`} aria-label="搜索结果与标注"><div className="side-tabs"><button className={sideTab === 'search' ? 'active' : ''} onClick={() => { setSideTab('search'); setBottomOpen(true); }}>搜索结果 {results ? `(${results.count})` : ''}</button><button className={sideTab === 'marks' ? 'active' : ''} onClick={() => { setSideTab('marks'); setBottomOpen(true); }}>标注 ({bookmarks.length})</button><button disabled={!results?.matches.length || exporting} title="导出当前已展示的匹配结果（含行号和日志内容，不含来源文件名），支持 TXT、CSV、JSON" onClick={() => void exportResults()}>{exporting ? '导出中…' : '导出结果'}</button><button className="panel-toggle" aria-expanded={bottomOpen} aria-label={bottomOpen ? '收起结果面板' : '展开结果面板'} onClick={() => setBottomOpen(value => !value)}>{bottomOpen ? '收起 ▾' : '展开 ▴'}</button></div>
         {bottomOpen && <div className="bottom-content">{sideTab === 'search' ? <>{results?.files !== undefined && <small className="batch-summary">已搜索 {results.searchedFiles}/{results.files} 个匹配文件 · {results.count.toLocaleString()} 条匹配</small>}{results?.capped && <p className="hint side-hint">仅展示前 10000 条匹配</p>}{!!results?.truncatedLines && <p className="hint side-hint">{results.truncatedLines} 个超长行仅搜索前 1MB</p>}<div className="inline"><button disabled={!results?.matches.length || openingState} title={shortcuts.previous} onClick={() => void navigateResult(-1)}>上一个</button><span>{results?.matches.length ? Math.max(0, resultIndex + 1) : 0} / {results?.matches.length || 0}</span><button disabled={!results?.matches.length || openingState} title={shortcuts.next} onClick={() => void navigateResult(1)}>下一个</button></div><SearchRows onCopy={() => setMessage('已复制搜索结果日志')} onError={setError} searching={searching} rowHeight={resultLineHeight(font.size)} results={results} onJump={match => { setResultIndex(results?.matches.indexOf(match) ?? -1); void jumpResult(match); }} /></> : <><div className="mark-form"><small>{selectedLine === null ? '点击日志行号选择要标注的行' : `标注第 ${selectedLine + 1} 行`}</small><input placeholder="添加备注…" value={note} onChange={e => setNote(e.target.value)} /><div className="inline"><input type="color" aria-label="标注颜色" value={color} onChange={e => setColor(e.target.value)} /><button className="primary" disabled={selectedLine === null || !doc?.ready} onClick={() => void run(saveMark)}>保存标注</button></div></div><div className="result-list">{bookmarks.map(mark => <div className="bookmark" key={mark.line}><button className="result" style={{ borderLeft: `3px solid ${mark.color}` }} onClick={() => goOriginal(mark.line)}><small>第 {mark.line + 1} 行</small><span>{mark.note}</span></button><button title="删除标注" onClick={() => void run(async () => { if (!doc) return; const updated = bookmarks.filter(b => b.line !== mark.line); await api.saveBookmarks(doc.bookmarkKey, updated); setBookmarks(updated); })}>×</button></div>)}</div></>}
 </div>}
       </section>}
         </div>
         <div className="embedded-telnet">{(['ssh', 'telnet'] as const).filter(mode => featureEnabled[mode]).map(mode => <TerminalPage key={mode} protocol={mode} onSshReconnect={() => void run(() => connectSsh(lastSshProfile.current || profile))} seed={mode === 'telnet' && seed?.kind === 'telnet' ? seed.terminal : undefined} active={session.active && terminalMode === mode && !modeSwitching} sshConnection={connection} sshConnecting={connecting} sshDisconnecting={disconnecting} outputVisible={telnetPage} settingsOpen={directorySettings} font={font} onShowOutput={() => showTerminal(mode)} />)}</div>
+        <footer className="status-bar" role="status" title={message}>{message}</footer>
       </main>
-      <button className="sidebar-toggle sidebar-toggle-right" aria-label={session.rightCollapsed ? '展开下载栏' : '收起下载栏'} title={session.rightCollapsed ? '展开下载栏' : '收起下载栏'} aria-expanded={!session.rightCollapsed} onClick={session.toggleRight}>{session.rightCollapsed ? '‹' : '›'}</button>
-      <DownloadedFiles autoExpandPaths={autoExpandPaths} paths={downloadedPaths} roots={[directories.download, directories.extract]} selected={!doc?.remote ? doc?.name : undefined} disabled={openingState} onRefresh={refreshDownloadedFiles} onError={setError} onOpenFolder={folder => void run(async () => { const result = await api.selectLocalPath(folder); setLocalListing(result.listing); setLocalPathInput(result.listing.path); setFileSource('local'); setSearchScope('folder'); setSelectedFile(''); setFilePattern(''); setFilenameFromSelection(false); setSelectionListPattern(''); setMessage(`本地文件夹 · ${result.listing.entries.filter(entry => !entry.directory).length} 个文件`); })} onOpen={file => { setExtractedPaths([file]); void openLogFile(file, 'extracted', undefined, false, 'extracted'); }} />
+      <SidebarDivider side="right" panelId={rightPanelId} collapsed={session.rightCollapsed} onToggle={session.toggleRight} />
+      <DownloadedFiles panelId={rightPanelId} autoExpandPaths={autoExpandPaths} paths={downloadedPaths} roots={[directories.download, directories.extract]} selected={!doc?.remote ? doc?.name : undefined} disabled={openingState} onRefresh={refreshDownloadedFiles} onError={setError} onOpenFolder={folder => void run(async () => { const result = await api.selectLocalPath(folder); setLocalListing(result.listing); setLocalPathInput(result.listing.path); setFileSource('local'); setSearchScope('folder'); setSelectedFile(''); setFilePattern(''); setFilenameFromSelection(false); setSelectionListPattern(''); setMessage(`本地文件夹 · ${result.listing.entries.filter(entry => !entry.directory).length} 个文件`); })} onOpen={file => { setExtractedPaths([file]); void openLogFile(file, 'extracted', undefined, false, 'extracted'); }} />
 
     </div>
     {jumpSettings && <div className="settings-backdrop" onClick={() => setJumpSettings(false)}><section className="directory-settings jump-settings" role="dialog" aria-label="跳板机配置" onClick={e => e.stopPropagation()}><div className="panel-title">跳板机配置<button aria-label="关闭跳板机配置" onClick={() => setJumpSettings(false)}>×</button></div><label>已保存跳板机<select aria-label="已保存跳板机" value={profile.jumpName || ''} onChange={e => void run(() => selectJump(e.target.value))}><option value="">新建跳板机…</option>{jumpProfiles.map(item => <option key={item.name} value={item.name}>{item.name} · {item.host}:{item.port}</option>)}</select></label><label>从已有服务器导入<select aria-label="从已有服务器导入" value="" onChange={e => void run(() => importServerAsJump(e.target.value))}><option value="">选择已保存的服务器…</option>{profiles.map(item => <option key={item.name} value={item.name}>{item.name} · {item.username}@{item.host}:{item.port}</option>)}</select></label><small className="hint">填入服务器地址及认证信息，确认后点击“保存并使用”。</small><label>跳板机名称<input aria-label="跳板机名称" placeholder="例如：办公室跳板机" value={jumpConfig.name || ''} onChange={e => updateJump({ name: e.target.value })} /></label><label>跳板机主机<input aria-label="跳板机主机" value={jumpConfig.host} onChange={e => updateJump({ host: e.target.value })} /></label><label>跳板机端口<input aria-label="跳板机端口" type="number" value={jumpConfig.port} onChange={e => updateJump({ port: Number(e.target.value) })} /></label><label>跳板机用户名<input aria-label="跳板机用户名" value={jumpConfig.username} onChange={e => updateJump({ username: e.target.value })} /></label><label>跳板机认证方式<select aria-label="跳板机认证方式" value={jumpConfig.auth} onChange={e => updateJump({ auth: e.target.value })}><option value="password">密码</option><option value="key">私钥</option><option value="agent">SSH Agent</option></select></label>{jumpConfig.auth === 'password' && <><label>跳板机密码<input aria-label="跳板机密码" type="password" value={jumpConfig.password || ''} onChange={e => updateJump({ password: e.target.value })} /></label><label className="jump-enable"><input type="checkbox" aria-label="保存跳板机密码" checked={jumpConfig.rememberPassword ?? true} onChange={e => updateJump({ rememberPassword: e.target.checked })} />保存跳板机密码</label></>}{jumpConfig.auth === 'key' && <><label>跳板机私钥<div className="inline"><input aria-label="跳板机私钥" value={jumpConfig.keyPath} onChange={e => updateJump({ keyPath: e.target.value })} /><button onClick={() => void run(async () => { const file = await api.chooseKey(); if (file) updateJump({ keyPath: file }); })}>选择私钥</button></div></label><label>跳板机私钥口令<input aria-label="跳板机私钥口令" type="password" value={jumpConfig.passphrase || ''} onChange={e => updateJump({ passphrase: e.target.value })} /></label></>}<p className="hint">不勾选保存密码时，密码仅用于当前会话，重启后需重新输入。连接设置中的主机、端口、用户名和认证信息用于目标机器。已有反向隧道时，目标主机填 127.0.0.1、端口填跳板机上的监听端口。此功能连接已有隧道，目标机器仍需先建立反向隧道。</p>{error && <p className="settings-error">{error}</p>}<div className="inline"><button className="primary" onClick={() => void run(async () => { await saveJumpCurrent(); setJumpSettings(false); })}>保存并使用</button><button className="danger-button" disabled={!profile.jumpName || connecting} onClick={() => void run(deleteCurrentJump)}>删除跳板机</button><button onClick={() => setJumpSettings(false)}>关闭</button></div></section></div>}
@@ -1087,7 +1218,11 @@ function Workspace() {
   const [active, setActive] = useState('default');
   const [lastSsh, setLastSsh] = useState('');
   const [fileBrowserHost, setFileBrowserHost] = useState<HTMLDivElement | null>(null);
-  const fileBrowserOwner = active === 'default' && tabs.some(tab => tab.id === lastSsh) ? lastSsh : '';
+  const selectedTab = tabs.find(tab => tab.id === active);
+  const sourceId = selectedTab?.seed?.kind === 'log' && selectedTab.seed.source === 'remote'
+    ? selectedTab.seed.sourceSession : active === 'default' ? lastSsh : undefined;
+  const fileBrowserOwner = tabs.some(tab => tab.id === sourceId && tab.seed?.kind === 'ssh') ? sourceId || '' : '';
+  const fileBrowserTab = fileBrowserOwner ? active : '';
   useEffect(() => {
     if (tabs.find(tab => tab.id === active)?.seed?.kind === 'ssh') setLastSsh(active);
   }, [active, tabs]);
@@ -1097,10 +1232,27 @@ function Workspace() {
   tabsRef.current = tabs;
   function beforeConnect(id: string, seed: SessionSeed) {
     if (seed.kind === 'log') {
+      if (seed.source === 'remote') {
+        const source = tabsRef.current.find(tab => tab.id === seed.sourceSession);
+        const existing = tabsRef.current.find(tab => tab.seed?.kind === 'log' && tab.seed.source === 'remote'
+          && tab.seed.sourceSession === seed.sourceSession && tab.seed.path === seed.path);
+        const next = existing?.id ?? crypto.randomUUID();
+        const profile = source?.seed?.kind === 'ssh' ? source.seed.profile : undefined;
+        const filename = seed.path.split('/').pop() || seed.path;
+        const title = profile ? `日志 · ${profile.name || profile.host} / ${filename}` : `日志 · ${filename}`;
+        tabsRef.current = existing
+          ? tabsRef.current.map(tab => tab.id === next ? { ...tab, seed } : tab)
+          : [...tabsRef.current, { id: next, title, seed }];
+        setTabs(tabsRef.current);
+        setActive(next);
+        return true;
+      }
       if (id === 'default') return false;
       if (tabsRef.current.find(tab => tab.id === id)?.seed?.kind === 'ssh') setLastSsh(id);
-      setTabs(previous => previous.map(tab => tab.id === 'default' ? { ...tab, seed } : tab));
-      setActive('default'); return true;
+      tabsRef.current = tabsRef.current.map(tab => tab.id === 'default' ? { ...tab, seed } : tab);
+      setTabs(tabsRef.current);
+      setActive('default');
+      return true;
     }
     if (seed.kind === 'ssh' && id !== 'default') {
       const own = tabsRef.current.find(tab => tab.id === id);
@@ -1118,7 +1270,7 @@ function Workspace() {
         return true;
       }
     }
-    if (id !== 'default' && !occupied.current.has(id)) { occupied.current.add(id); return false; }
+    if (id !== 'default' && tabsRef.current.find(tab => tab.id === id)?.seed?.kind !== 'log' && !occupied.current.has(id)) { occupied.current.add(id); return false; }
     const next = crypto.randomUUID();
     const title = seed.kind === 'ssh' ? `SSH · ${seed.profile.name || seed.profile.host}` : `Telnet · ${seed.terminal.name || seed.terminal.host}`;
     const nextTab = { id: next, title, seed };
@@ -1128,10 +1280,56 @@ function Workspace() {
   async function closeTab(id: string) {
     if (id === 'default') return;
     try { await window.viewer.sessionClose(id); } catch (error) { console.error(error); return; }
-    setTabs(previous => { const index = previous.findIndex(tab => tab.id === id); const next = previous.filter(tab => tab.id !== id); if (!next.length) next.push({ id: crypto.randomUUID(), title: '日志查看' }); if (active === id) setActive(next[Math.min(index, next.length - 1)].id); return next; });
+    const index = tabsRef.current.findIndex(tab => tab.id === id);
+    if (index === -1) return;
+    const next = tabsRef.current.filter(tab => tab.id !== id);
+    tabsRef.current = next;
+    setTabs(next);
+    setActive(current => current === id ? next[Math.min(index, next.length - 1)].id : current);
     occupied.current.delete(id);
   }
-  const tabBar = <nav className="workspace-tabs" role="tablist" aria-label="会话标签页">{tabs.map(tab => <div key={tab.id} className={`workspace-tab ${active === tab.id ? 'active' : ''}`}><button role="tab" aria-selected={active === tab.id} onClick={() => setActive(tab.id)}>{tab.title}</button>{tab.id !== 'default' && <button aria-label={`关闭 ${tab.title}`} onClick={() => void closeTab(tab.id)}>×</button>}</div>)}</nav>;
-  return <>{tabs.map(tab => <SessionContext.Provider key={tab.id} value={{ fileBrowserOwner, fileBrowserHost, setFileBrowserHost, id: tab.id, active: active === tab.id, leftCollapsed: sidebars.left, rightCollapsed: sidebars.right, toggleLeft: () => toggleSidebar('left'), toggleRight: () => toggleSidebar('right'), registerReconnect: callback => { reconnectHandlers.current.set(tab.id, callback); return () => { if (reconnectHandlers.current.get(tab.id) === callback) reconnectHandlers.current.delete(tab.id); }; }, tabBar, beforeConnect: seed => beforeConnect(tab.id, seed), title: title => setTabs(previous => previous.map(item => item.id === tab.id && item.id !== 'default' ? { ...item, title } : item)) }}><div className="session-workspace" style={{ display: active === tab.id ? undefined : 'none' }}><App seed={tab.seed} /></div></SessionContext.Provider>)}</>;
+  useLayoutEffect(() => {
+    const selected = document.querySelector('.session-workspace:not([style*="display: none"]) .workspace-tab.active');
+    selected?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [active]);
+  const tabBar = <nav className="workspace-tabs" role="tablist" aria-label="会话标签页">{tabs.map(tab => <div key={tab.id} className={`workspace-tab ${active === tab.id ? 'active' : ''}`}><button role="tab" title={tab.seed?.kind === 'log' && tab.id !== 'default' ? `${tab.title}\n${tab.seed.path}` : tab.title} aria-selected={active === tab.id} onClick={() => setActive(tab.id)}>{tab.title}</button>{tab.id !== 'default' && <button aria-label={`关闭 ${tab.title}`} onClick={() => void closeTab(tab.id)}>×</button>}</div>)}</nav>;
+  return <>{tabs.map(tab => <SessionContext.Provider key={tab.id} value={{ fileBrowserOwner, fileBrowserTab, fileBrowserHost, setFileBrowserHost, id: tab.id, active: active === tab.id, leftCollapsed: sidebars.left, rightCollapsed: sidebars.right, toggleLeft: () => toggleSidebar('left'), toggleRight: () => toggleSidebar('right'), registerReconnect: callback => { reconnectHandlers.current.set(tab.id, callback); return () => { if (reconnectHandlers.current.get(tab.id) === callback) reconnectHandlers.current.delete(tab.id); }; }, tabBar, beforeConnect: seed => beforeConnect(tab.id, seed), title: title => setTabs(previous => previous.map(item => item.id === tab.id && item.id !== 'default' ? { ...item, title } : item)) }}><div className="session-workspace" style={{ display: active === tab.id ? undefined : 'none' }}><App seed={tab.seed} /></div></SessionContext.Provider>)}</>;
 }
-createRoot(document.getElementById('root')!).render(<Workspace />);
+function ClipboardFeedback() {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    function showCopied() {
+      setCopied(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => setCopied(false), 1600);
+    }
+    function onCopy(event: ClipboardEvent) {
+      const target = event.target;
+      const fieldSelected = (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
+        && target.selectionStart !== target.selectionEnd;
+      if (fieldSelected || window.getSelection()?.toString()) showCopied();
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return;
+      if (event.target instanceof Element && event.target.closest('.xterm')) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'c' && key !== 'v') return;
+      event.preventDefault();
+      if (key === 'c') document.execCommand('copy');
+      else void window.viewer.pasteClipboard().catch(console.error);
+    }
+    document.addEventListener('copy', onCopy);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('viewer-copied', showCopied);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('copy', onCopy);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('viewer-copied', showCopied);
+    };
+  }, []);
+  return <div className={copied ? 'clipboard-feedback visible' : 'clipboard-feedback'} aria-live="polite">{copied ? '已复制' : ''}</div>;
+}
+
+createRoot(document.getElementById('root')!).render(<><Workspace /><ClipboardFeedback /></>);

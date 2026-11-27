@@ -3,7 +3,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { stripVTControlCharacters } = require('node:util');
 
-async function createSshLog(root, target, now = new Date()) {
+async function createSshLog(root, target, now = new Date(), text = '') {
   const part = value => String(value).padStart(2, '0');
   const date = `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}`;
   const host = require('./source-names.cjs').terminalLogTarget(target);
@@ -11,7 +11,7 @@ async function createSshLog(root, target, now = new Date()) {
   await fs.mkdir(folder, { recursive: true, mode: 0o700 });
   const time = `${part(now.getHours())}-${part(now.getMinutes())}-${part(now.getSeconds())}`;
   const file = path.join(folder, `${time}-${randomUUID()}.log`);
-  await fs.writeFile(file, '', { flag: 'wx', mode: 0o600 });
+  await fs.writeFile(file, text, { flag: 'wx', mode: 0o600 });
   return file;
 }
 
@@ -21,7 +21,7 @@ function terminalSize(cols, rows) {
 }
 
 function createSshTerminal({ getClient, getTarget, getRoot, getLogMode, emit, onLogFile = () => {}, createLog = createSshLog, fileSystem = fs, shellTimeout = 20000 }) {
-  let current, outputFile, outputTarget = '', queue = Promise.resolve();
+  let current, output, queue = Promise.resolve();
   const setups = new Set();
   const logError = error => emit({ type: 'ssh-terminal-log-error', message: 'SSH 终端日志失败：' + error.message });
   const enqueue = work => {
@@ -46,19 +46,9 @@ function createSshTerminal({ getClient, getTarget, getRoot, getLogMode, emit, on
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     const own = { cancel: error => { clearTimeout(own.timeout); reject(error); }, channel: undefined, timeout: undefined };
     current = own;
-    outputFile = undefined;
-    outputTarget = String(getTarget());
-    const target = outputTarget;
+    const sessionOutput = output = { root: getRoot(), target: String(getTarget()), started: new Date(), file: undefined };
     const setup = (async () => {
-      // Flush the previous session before allocating this session's independent file.
       await queue;
-      if (current !== own) return;
-      try {
-        const file = await createLog(getRoot(), target);
-        onLogFile(file);
-        if (current !== own) return;
-        outputFile = file;
-      } catch (error) { if (current === own) logError(error); }
       if (current !== own) return;
       own.timeout = setTimeout(() => {
         if (current !== own) return;
@@ -81,11 +71,20 @@ function createSshTerminal({ getClient, getTarget, getRoot, getLogMode, emit, on
           if (current !== own) return;
           const text = String(message);
           emit({ type: 'ssh-terminal-data', message: text });
-          const file = outputFile;
           const mode = getLogMode() || 'printable';
-          if (!file || mode === 'none') return;
+          if (mode === 'none') return;
           const recorded = mode === 'printable' ? stripVTControlCharacters(text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '') : text;
-          enqueue(() => fileSystem.appendFile(file, recorded, { mode: 0o600 })).catch(() => {});
+          if (!recorded) return;
+          enqueue(async () => {
+            if (sessionOutput.file) {
+              await fileSystem.appendFile(sessionOutput.file, recorded, { mode: 0o600 });
+            } else {
+              const file = await createLog(sessionOutput.root, sessionOutput.target, sessionOutput.started, recorded);
+              sessionOutput.file = file;
+              onLogFile(file);
+              if (output === sessionOutput && getLogMode() !== 'none') emit({ type: 'ssh-terminal-log-file', file });
+            }
+          }).catch(() => {});
         };
         channel.setEncoding('utf8');
         channel.on('data', data);
@@ -97,7 +96,7 @@ function createSshTerminal({ getClient, getTarget, getRoot, getLogMode, emit, on
           close();
         });
         channel.on('close', () => { if (current === own) close(); });
-        emit({ type: 'ssh-terminal-status', message: '已连接', file: outputFile });
+        emit({ type: 'ssh-terminal-status', message: '已连接' });
         resolve(true);
       });
     })().catch(error => {
@@ -123,13 +122,15 @@ function createSshTerminal({ getClient, getTarget, getRoot, getLogMode, emit, on
       const size = terminalSize(cols, rows);
       if (current?.channel) current.channel.setWindow(size.rows, size.cols, 0, 0);
     },
-    get outputFile() { return outputFile; },
-    get outputTarget() { return outputTarget; },
+    get outputFile() { return output?.file; },
+    get outputTarget() { return output?.target || ''; },
     overwrite() {
-      const file = outputFile;
-      return file ? enqueue(() => fileSystem.writeFile(file, '', { mode: 0o600 })) : Promise.resolve();
+      const sessionOutput = output;
+      return enqueue(async () => {
+        if (sessionOutput?.file) await fileSystem.writeFile(sessionOutput.file, '', { mode: 0o600 });
+      });
     },
-    copyOutput(destination, file = outputFile) {
+    copyOutput(destination, file = output?.file) {
       if (!file) throw new Error('尚无 SSH 命令终端会话输出');
       return enqueue(() => fileSystem.copyFile(file, destination));
     },

@@ -22,6 +22,7 @@ const assert = require('node:assert/strict');
     const first = page.locator('.search-result-row').first();
     await first.getByRole('button', { name: '复制第 1 行日志', exact: true }).click();
     assert.equal(await read(), lines[0]);
+    await page.locator('.clipboard-feedback').getByText('已复制', { exact: true }).waitFor();
     async function selectFirst() {
       await first.locator('.search-result-text').evaluate(element => {
         const range = document.createRange(); range.setStart(element.firstChild, 5); range.setEnd(element.firstChild, 16);
@@ -44,10 +45,14 @@ const assert = require('node:assert/strict');
     await selectFirst();
     await page.keyboard.press('Control+c');
     assert.equal(await read(), 'copy-marker');
+    await app.evaluate(({ clipboard }) => clipboard.clear());
+    await page.keyboard.press('Control+Shift+c');
+    await page.waitForFunction(() => document.querySelector('.clipboard-feedback')?.textContent === '已复制');
+    assert.equal(await read(), 'copy-marker');
     // An unrelated row's selection must not leak into copying the second row.
     await page.getByRole('button', { name: '复制第 2 行日志', exact: true }).click();
     assert.equal(await read(), lines[1]);
-    assert.equal(await page.locator('.document-bar strong').textContent(), '尚未打开日志');
+    assert.equal(await page.locator('.session-document-meta').count(), 0);
     console.log('Search result copy passed: full row, selection, context menu, Ctrl+C, row isolation and no navigation.');
   } finally { if (app) await app.close(); await fs.rm(temp, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -21,32 +21,63 @@ const { createServer } = require('./ssh-fixture.cjs');
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   let app, ssh;
   try {
-    app = await _electron.launch({ args: ['.'], env: { ...process.env, VIEWER_DATA_DIR: path.join(temp, 'config') } });
+    const config = path.join(temp, 'config');
+    await fs.mkdir(config);
+    await fs.writeFile(path.join(config, 'settings.json'), JSON.stringify({
+      autoCheckUpdates: false,
+      directories: { download: path.join(temp, 'downloads'), extract: path.join(temp, 'extracted') }
+    }));
+    app = await _electron.launch({ args: ['.'], env: { ...process.env, VIEWER_DATA_DIR: config } });
     await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
     const page = await app.firstWindow();
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     const port = server.address().port;
-    const result = await page.evaluate(async port => {
+    const { events: result, files } = await page.evaluate(async port => {
       const events = [];
       const off = window.viewer.onEvent(event => events.push(event));
       const call = (id, method, ...args) => window.viewer.sessionInvoke(id, method, args);
       await call('test-a', 'telnetConnect', '127.0.0.1', port, 'A');
       await call('test-b', 'telnetConnect', '127.0.0.1', port, 'B');
-      await call('test-a', 'telnetWrite', 'marker-A\n');
-      await call('test-b', 'telnetWrite', 'marker-B\n');
-      await new Promise(resolve => setTimeout(resolve, 250));
+      const files = {};
+      files.silent = await window.viewer.downloadedFiles();
+      async function echoOutput(id, text) {
+        let removeListener;
+        const echoed = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('No Telnet echo for ' + id)), 5000);
+          removeListener = window.viewer.onEvent(event => {
+            if (event.type === 'telnet-data' && event.sessionId === id && event.message.includes(text)) {
+              clearTimeout(timer);
+              resolve();
+            }
+          });
+        });
+        try { await Promise.all([call(id, 'telnetWrite', text), echoed]); }
+        finally { removeListener(); }
+      }
+      await call('test-a', 'telnetRecording', 'none', true);
+      await echoOutput('test-a', 'disabled output');
+      files.disabled = await window.viewer.downloadedFiles();
+      await call('test-a', 'telnetRecording', 'printable', true);
+      await echoOutput('test-a', '\x1b[31m\x1b[0m\x07');
+      files.controlOnly = await window.viewer.downloadedFiles();
+      await echoOutput('test-a', 'marker-A\n');
+      await echoOutput('test-b', 'marker-B\n');
+      files.first = await call('test-a', 'telnetRecording', 'printable', true);
       await window.viewer.sessionClose('test-a');
-      await call('test-b', 'telnetWrite', 'still-B\n');
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await echoOutput('test-b', 'still-B\n');
+      files.second = await call('test-b', 'telnetRecording', 'printable', true);
       await window.viewer.sessionClose('test-b');
       off();
-      return events.filter(event => event.type === 'telnet-data');
+      return { events: events.filter(event => event.type === 'telnet-data'), files };
     }, port);
     assert.ok(result.some(e => e.sessionId === 'test-a' && e.message.includes('marker-A')));
     assert.ok(result.some(e => e.sessionId === 'test-b' && e.message.includes('marker-B')));
     assert.ok(result.some(e => e.sessionId === 'test-b' && e.message.includes('still-B')));
     assert.ok(!result.some(e => e.sessionId === 'test-a' && e.message.includes('marker-B')));
-    console.log('PASS: concurrent Telnet isolation and closing one session preserves the other');
+    assert.deepEqual([files.silent, files.disabled, files.controlOnly], [[], [], []]);
+    assert.equal(await fs.readFile(files.first, 'utf8'), 'marker-A\n');
+    assert.equal(await fs.readFile(files.second, 'utf8'), 'marker-B\nstill-B\n');
+    console.log('PASS: Telnet logs start with the first recordable output and remain isolated across sessions');
     const remote = path.join(temp, 'remote');
     await fs.mkdir(path.join(remote, 'system/log'), { recursive: true });
     await fs.writeFile(path.join(remote, 'system/log/a.log'), 'session-A-content\n');
@@ -190,6 +221,11 @@ const { createServer } = require('./ssh-fixture.cjs');
     await visible().locator('.line-content').filter({ hasText: 'session-B-content' }).waitFor();
     await visible().getByRole('tab', { name: 'SSH · SSH fixture', exact: true }).click();
     assert.equal(await visible().getByLabel('远程路径', { exact: true }).inputValue(), '/system/log');
+    for (const filename of ['a.log', 'b.log']) {
+      const tab = `日志 · SSH fixture / ${filename}`;
+      await visible().getByRole('tab', { name: tab, exact: true }).waitFor();
+      await visible().getByRole('button', { name: `关闭 ${tab}`, exact: true }).click();
+    }
     console.log('PASS: log viewer inherits the source SFTP browser and can open another remote file');
 
     await visible().getByRole('tab', { name: '日志查看', exact: true }).click();
@@ -221,19 +257,43 @@ const { createServer } = require('./ssh-fixture.cjs');
     await visible().getByLabel('常用远程位置', { exact: true }).getByRole('button', { name: '★ /system', exact: true }).click();
     assert.equal(await visible().getByLabel('远程路径', { exact: true }).inputValue(), '/system');
     await visible().getByRole('button', { name: '取消收藏远程位置', exact: true }).waitFor();
+    const leftDivider = visible().getByRole('separator', { name: '连接栏', exact: true });
+    const rightDivider = visible().getByRole('separator', { name: '下载栏', exact: true });
+    async function dragDivider(divider, distance) {
+      const box = await divider.boundingBox();
+      assert.ok(box, 'sidebar divider is visible');
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x + distance, y, { steps: 5 });
+      await page.mouse.up();
+    }
+
+    assert.equal(await visible().locator('.header').getByRole('button', { name: /连接栏|下载栏/ }).count(), 0);
     const width = await visible().locator('.main-panel').evaluate(e => e.clientWidth);
-    await visible().getByRole('button', { name: '收起连接栏', exact: true }).click();
-    await visible().getByRole('button', { name: '收起下载栏', exact: true }).click();
+    await dragDivider(leftDivider, -8);
+    await dragDivider(rightDivider, -60);
+    assert.equal(await leftDivider.getAttribute('aria-valuenow'), '100');
+    assert.equal(await rightDivider.getAttribute('aria-valuenow'), '100');
+    await dragDivider(leftDivider, -60);
+    await dragDivider(rightDivider, 60);
     assert.equal(await visible().locator('.left-panel').isVisible(), false);
     assert.equal(await visible().locator('.downloads-panel').isVisible(), false);
     assert.ok(await visible().locator('.main-panel').evaluate(e => e.clientWidth) > width + 400);
     assert.ok((await page.evaluate(() => window.observedThemes)).every(theme => theme === 'light'), 'connecting must preserve the light theme throughout');
     await page.reload();
-    await visible().getByRole('button', { name: '展开连接栏', exact: true }).waitFor();
-    await visible().getByRole('button', { name: '展开下载栏', exact: true }).waitFor();
+    await leftDivider.waitFor();
+    await rightDivider.waitFor();
+    assert.equal(await leftDivider.getAttribute('aria-valuenow'), '0');
+    assert.equal(await rightDivider.getAttribute('aria-valuenow'), '0');
     assert.equal(await visible().locator('.downloads-panel').isVisible(), false);
-    await visible().getByRole('button', { name: '展开连接栏', exact: true }).click();
-    await visible().getByRole('button', { name: '展开下载栏', exact: true }).click();
+    await dragDivider(leftDivider, 60);
+    await dragDivider(rightDivider, -60);
+    await rightDivider.press('Enter');
+    assert.equal(await rightDivider.getAttribute('aria-valuenow'), '0');
+    await rightDivider.press('ArrowLeft');
+    assert.equal(await rightDivider.getAttribute('aria-valuenow'), '100');
     await visible().locator('.left-panel').waitFor();
     await visible().getByLabel('远程路径', { exact: true }).focus();
     assert.deepEqual(await visible().locator('.path-suggestions button').evaluateAll(options => options.map(option => option.textContent.replace(/^★ /, ''))), ['/system', '/system/log']);

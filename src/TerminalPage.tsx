@@ -202,7 +202,27 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     term.attachCustomKeyEventHandler(e => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { if (e.type === 'keydown') { e.preventDefault(); searchInput.current?.focus(); searchInput.current?.select(); } return false; }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && term.hasSelection()) return false;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return true;
+      const key = e.key.toLowerCase();
+      if (key === 'c' && (e.shiftKey || e.metaKey || term.hasSelection())) {
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          const text = term.getSelection();
+          if (text) void api.copyText(text).then(() => {
+            window.dispatchEvent(new Event('viewer-copied'));
+          }).catch(error => setStatus(String(error)));
+        }
+        return false;
+      }
+      if (key === 'v') {
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          void api.readClipboardText().then(text => {
+            if (text && activeRef.current && terminal.current === term && term.textarea === document.activeElement) term.paste(text);
+          }).catch(error => setStatus(String(error)));
+        }
+        return false;
+      }
       return true;
     });
     const input = term.onData(text => {
@@ -246,8 +266,9 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
         const position = term.buffer.active.viewportY;
         term.write(e.message || '', () => { if (searchingRef.current) term.scrollToLine(position); });
       }
-      if (isSsh && e.type === 'ssh-terminal-log-error') setLogApplied(e.message || e.error || '日志写入失败');
-      if (e.type === (isSsh ? 'ssh-terminal-status' : 'telnet-status')) { connectedRef.current = e.message === '已连接'; setConnected(connectedRef.current); if (connectedRef.current) everConnected.current = true; setStatus(e.message || ''); if (e.file) setLogFile(e.file); if (e.message === '已连接' && activeRef.current && outputVisibleRef.current) { requestAnimationFrame(() => { fit.fit(); term.focus(); }); } }
+      if (e.type === (isSsh ? 'ssh-terminal-log-error' : 'telnet-log-error')) setLogApplied(e.message || e.error || '日志写入失败');
+      if (e.type === (isSsh ? 'ssh-terminal-log-file' : 'telnet-log-file') && e.file) setLogFile(e.file);
+      if (e.type === (isSsh ? 'ssh-terminal-status' : 'telnet-status')) { connectedRef.current = e.message === '已连接'; setConnected(connectedRef.current); if (connectedRef.current) everConnected.current = true; setStatus(e.message || ''); if (connectedRef.current) setLogFile(e.file || ''); if (e.message === '已连接' && activeRef.current && outputVisibleRef.current) { requestAnimationFrame(() => { fit.fit(); term.focus(); }); } }
     });
     const terminalResize = term.onResize(({ cols, rows }) => { if (isSsh && connectedRef.current) void api.sshTerminalResize(cols, rows).catch(error => setStatus(String(error))); });
     const resize = new ResizeObserver(() => { if (viewport.current?.clientWidth) fit.fit(); });
@@ -270,6 +291,38 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
     // shell instead of opening a second session (or showing it as closed).
   }, [active]);
   const send = async (text: string) => { if (!activeRef.current) return; if (!connectedRef.current || (isSsh && sshDisconnecting)) { if (!text.trim()) { if (!connectLock.current) reconnectRef.current(); } else setStatus(disconnectedMessage); return; } showOutputRef.current(); if (!isSsh && echoRef.current) terminal.current?.write(text.replace(/\r?\n/g, '\r\n')); try { await write(!isSsh && connectedWebModeRef.current ? text.replace(/[\r\n]+$/, '') + (text === '\x03' ? '' : '\n') : text); } catch (error) { setStatus(String(error)); } };
+
+  async function sendTerminalCommand(command: string) {
+    if (!activeRef.current || !connectedRef.current || (isSsh && sshDisconnectingRef.current)) throw new Error('终端未连接');
+    const web = !isSsh && connectedWebModeRef.current;
+    const text = web && !/^send(?:\s|$)/i.test(command) ? 'send ' + command : command;
+    const version = connectionVersion.current;
+    await showOutputRef.current();
+    if (connectionVersion.current !== version || !activeRef.current || !connectedRef.current || (isSsh && sshDisconnectingRef.current)) throw new Error('终端未连接');
+    if (!isSsh && echoRef.current) terminal.current?.write(text + '\r\n');
+    await write(text + (isSsh ? '\r' : web ? '\n' : '\r\n'));
+  }
+
+  async function sendShortcut(command: string) {
+    if (!connectedRef.current) {
+      await send('');
+      return;
+    }
+    const lines = command.trim().replace(/(?:\\r|\\n|[\r\n])+$/g, '')
+      .split(/\r\n|\r|\n/).map(line => line.trim()).filter(Boolean);
+    const version = connectionVersion.current;
+    terminal.current?.focus();
+    try {
+      for (const [index, line] of lines.entries()) {
+        if (index > 0) await new Promise(resolve => setTimeout(resolve, 10));
+        if (connectionVersion.current !== version || !activeRef.current || !connectedRef.current) return;
+        await sendTerminalCommand(line);
+      }
+    } catch (error) {
+      setStatus(String(error));
+    }
+  }
+
   async function openSshTerminal() {
     if (sshOpening.current) return;
     sshOpening.current = true;
@@ -330,7 +383,16 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
       searchInput.current?.focus(); searchInput.current?.select();
     }
   }}>
-    {connectionSlot && !isSsh && createPortal(<section className="telnet-sidebar"><div className="panel-title">Telnet <span className={`connection-status telnet-connection-status${connected ? ' connected' : busy ? ' connecting' : ''}`} role="status" aria-label="Telnet 连接状态">{status}</span></div><div className="inline telnet-controls"><select aria-label="Telnet 连接选择" value={webMode ? webNodeId || '__web__' : directNodeId || '__direct__'} onChange={e => { if (e.target.value === '__direct__' || directNodes.some(node => node.id === e.target.value)) { setWebMode(false); if (e.target.value === '__direct__') { selectDirectNode(''); setConnectionSettings(true); } else selectDirectNode(e.target.value); } else { setWebMode(true); if (e.target.value !== '__web__') selectWebNode(e.target.value); } }}><option value="__direct__">新增连接…</option>{directNodes.map(node => <option key={node.id} value={node.id}>直连 · {node.name} · {node.host}:{node.port}</option>)}<option value="__web__">Web 远程设备…</option>{webNodes.map(node => <option key={node.id} value={node.id}>{node.name} · {node.address}</option>)}</select>{webMode && <><label>设备/车号<input aria-label="设备号或车号" value={deviceQuery || device} onChange={e => { deviceSearchVersion.current++; setDevice(''); setDeviceName(''); setDeviceQuery(e.target.value); setDeviceMatches([]); setDeviceSearchOpen(false); }} placeholder="输入设备号或车号关键词" /></label>{deviceSearchOpen && <div className="device-search-results" role="listbox" aria-label="设备搜索结果">{deviceSearching ? <small>搜索中…</small> : deviceSearchError ? <small>{deviceSearchError}</small> : deviceMatches.length ? deviceMatches.map(item => <button role="option" aria-selected={device === item.number} key={item.number} title={`车号：${item.name || '未知'} · 设备号：${item.number}`} onClick={() => { deviceSearchVersion.current++; setDevice(item.number); setDeviceName(item.name); setDeviceQuery(''); setDeviceSearchOpen(false); setDeviceSearching(false); }}><i className={`device-status-dot ${item.online ? 'online' : 'offline'}`} aria-label={item.online ? '在线' : '离线'} />{`${item.name || '未知车号'} · ${item.number}`}</button>) : <small>没有匹配的设备</small>}</div>}</>}<div className="telnet-connection-actions"><button onClick={() => setConnectionSettings(true)}>⚙ 设置</button><button ref={connectButton} className="primary" disabled={busy} onClick={() => void connectTelnet()}>连接</button><button onClick={() => { connectionVersion.current++; void api.telnetClose(); connectedRef.current = false; setConnected(false); setStatus('已断开'); }}>断开</button><button onClick={() => terminal.current?.clear()}>清屏</button><label><input type="checkbox" checked={echo} onChange={e => { setEcho(e.target.checked); echoRef.current = e.target.checked; }} />本地回显</label></div></div></section>, connectionSlot)}
+    {connectionSlot && !isSsh && createPortal(<section className="telnet-sidebar"><div className="panel-title">Telnet <span className={`connection-status telnet-connection-status${connected ? ' connected' : busy ? ' connecting' : ''}`} role="status" aria-label="Telnet 连接状态">{status}</span></div><div className="inline telnet-controls"><select aria-label="Telnet 连接选择" value={webMode ? webNodeId || '__web__' : directNodeId || '__direct__'} onChange={e => { if (e.target.value === '__direct__' || directNodes.some(node => node.id === e.target.value)) { setWebMode(false); if (e.target.value === '__direct__') { selectDirectNode(''); setConnectionSettings(true); } else selectDirectNode(e.target.value); } else { setWebMode(true); if (e.target.value !== '__web__') selectWebNode(e.target.value); } }}>
+      <optgroup label="本地直连">
+        <option value="__direct__">本地直连 · 新增连接…</option>
+        {directNodes.map(node => <option key={node.id} value={node.id}>本地直连 · {node.name} · {node.host}:{node.port}</option>)}
+      </optgroup>
+      <optgroup label="Web 端连接">
+        <option value="__web__">Web 端连接 · 远程设备…</option>
+        {webNodes.map(node => <option key={node.id} value={node.id}>Web 端连接 · {node.name} · {node.address}</option>)}
+      </optgroup>
+    </select>{webMode && <><label>设备/车号<input aria-label="设备号或车号" value={deviceQuery || device} onChange={e => { deviceSearchVersion.current++; setDevice(''); setDeviceName(''); setDeviceQuery(e.target.value); setDeviceMatches([]); setDeviceSearchOpen(false); }} placeholder="输入设备号或车号关键词" /></label>{deviceSearchOpen && <div className="device-search-results" role="listbox" aria-label="设备搜索结果">{deviceSearching ? <small>搜索中…</small> : deviceSearchError ? <small>{deviceSearchError}</small> : deviceMatches.length ? deviceMatches.map(item => <button role="option" aria-selected={device === item.number} key={item.number} title={`车号：${item.name || '未知'} · 设备号：${item.number}`} onClick={() => { deviceSearchVersion.current++; setDevice(item.number); setDeviceName(item.name); setDeviceQuery(''); setDeviceSearchOpen(false); setDeviceSearching(false); }}><i className={`device-status-dot ${item.online ? 'online' : 'offline'}`} aria-label={item.online ? '在线' : '离线'} />{`${item.name || '未知车号'} · ${item.number}`}</button>) : <small>没有匹配的设备</small>}</div>}</>}<div className="telnet-connection-actions"><button onClick={() => setConnectionSettings(true)}>⚙ 设置</button><button ref={connectButton} className="primary" disabled={busy} onClick={() => void connectTelnet()}>连接</button><button onClick={() => { connectionVersion.current++; void api.telnetClose(); connectedRef.current = false; setConnected(false); setStatus('已断开'); }}>断开</button><button onClick={() => terminal.current?.clear()}>清屏</button><label><input type="checkbox" checked={echo} onChange={e => { setEcho(e.target.checked); echoRef.current = e.target.checked; }} />本地回显</label></div></div></section>, connectionSlot)}
     {!isSsh && connectionSettings && <div className="settings-backdrop" style={{ zIndex: 115 }} onClick={() => setConnectionSettings(false)}><form className="directory-settings telnet-connection-settings" role="dialog" aria-label="Telnet 连接设置" onClick={e => e.stopPropagation()} onSubmit={async e => {
       e.preventDefault();
       if (webMode) {
@@ -347,7 +409,7 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
       }
       setConnectionSettings(false);
     }}><div className="panel-title">Telnet 设置<button type="button" aria-label="关闭设置" onClick={() => setConnectionSettings(false)}>×</button></div>
-      <label>连接方式<select value={webMode ? 'web' : 'direct'} onChange={e => setWebMode(e.target.value === 'web')}><option value="direct">直连 Telnet</option><option value="web">Web 远程设备</option></select></label>
+      <label>连接方式<select value={webMode ? 'web' : 'direct'} onChange={e => setWebMode(e.target.value === 'web')}><option value="direct">本地直连</option><option value="web">Web 端连接</option></select></label>
       {webMode ? <>
         <label>登录节点<select aria-label="Web 登录节点" value={webNodeId} onChange={e => selectWebNode(e.target.value)}><option value="">＋ 新建节点</option>{webNodes.map(node => <option key={node.id} value={node.id}>{node.name} · {node.address}</option>)}</select></label>
         <label>名称<input value={webNodeName} placeholder="选填，默认使用服务地址" onChange={e => setWebNodeName(e.target.value)} /></label>
@@ -359,18 +421,11 @@ export function TerminalPage({ protocol, active, onShowOutput, font, settingsOpe
       <div className="inline"><button className="primary">保存</button><button type="button" onClick={() => setConnectionSettings(false)}>取消</button>{!webMode && <button type="button" onClick={() => selectDirectNode('')}>新增直连</button>}{!webMode && directNodeId && <button type="button" onClick={() => { const next = directNodes.filter(node => node.id !== directNodeId); saveDirectNodes(next); selectDirectNode(next[0]?.id || ''); }}>删除直连</button>}{webMode && webNodeId && <button type="button" onClick={() => { saveWebNodes(webNodes.filter(node => node.id !== webNodeId)); selectWebNode(''); }}>删除节点</button>}</div>
     </form></div>}
     {settingsSlot && createPortal(<><button onClick={() => setLogSettings(true)}>日志设置…</button><button onClick={async () => { try { const file = await (isSsh ? api.sshTerminalSaveOutput() : api.telnetSaveOutput()); if (file) setLogApplied('已保存：' + file); } catch (error) { setLogApplied(String(error)); } }}>保存输出…</button>{logApplied && <small role="status">{logApplied}</small>}</>, settingsSlot)}
-    {logSettings && <div className="settings-backdrop" style={{ zIndex: 120 }} onClick={() => setLogSettings(false)}><section className="directory-settings" role="dialog" aria-label={label + " 日志设置"} onClick={e => e.stopPropagation()}><div className="panel-title">日志设置<button aria-label="关闭日志设置" onClick={() => setLogSettings(false)}>×</button></div><label>日志类型<select value={logMode} onChange={e => setLogMode(e.target.value)}><option value="none">不记录</option><option value="printable">记录可打印输出</option><option value="all">记录所有输出（含控制序列）</option></select></label><label>写入方式<select value={append ? 'append' : 'overwrite'} onChange={e => setAppend(e.target.value === 'append')}><option value="append">追加日志文件</option><option value="overwrite">覆盖日志文件</option></select></label><button className="primary" onClick={async () => { try { const file = await recording(logMode, append); setLogFile(file || ''); setLogApplied(logMode === 'none' ? '已停止记录' : file ? '已应用日志设置' : '已应用，下次连接时自动创建日志'); } catch (error) { setLogApplied(String(error)); } }}>应用</button>{logFile && <><span title={logFile}>记录中：{logFile}</span><button onClick={async () => { try { await recording('none', true); setLogMode('none'); setLogFile(''); setLogApplied('已停止记录'); } catch (error) { setLogApplied(String(error)); } }}>停止记录</button></>}{logApplied && <p role="status">{logApplied}</p>}<p className="hint">自动保存到下载目录 {protocol}/日期/{isSsh ? '连接名称与主机' : '车号、设备号或直连名称与地址'}/，每次连接新建日志；清屏不影响记录。覆盖仅清空当前会话日志。</p></section></div>}
+    {logSettings && <div className="settings-backdrop" style={{ zIndex: 120 }} onClick={() => setLogSettings(false)}><section className="directory-settings" role="dialog" aria-label={label + " 日志设置"} onClick={e => e.stopPropagation()}><div className="panel-title">日志设置<button aria-label="关闭日志设置" onClick={() => setLogSettings(false)}>×</button></div><label>日志类型<select value={logMode} onChange={e => setLogMode(e.target.value)}><option value="none">不记录</option><option value="printable">记录可打印输出</option><option value="all">记录所有输出（含控制序列）</option></select></label><label>写入方式<select value={append ? 'append' : 'overwrite'} onChange={e => setAppend(e.target.value === 'append')}><option value="append">追加日志文件</option><option value="overwrite">覆盖日志文件</option></select></label><button className="primary" onClick={async () => { try { const file = await recording(logMode, append); setLogFile(file || ''); setLogApplied(logMode === 'none' ? '已停止记录' : file ? '已应用日志设置' : '已应用，收到可记录的输出后创建日志'); } catch (error) { setLogApplied(String(error)); } }}>应用</button>{logFile && <><span title={logFile}>记录中：{logFile}</span><button onClick={async () => { try { await recording('none', true); setLogMode('none'); setLogFile(''); setLogApplied('已停止记录'); } catch (error) { setLogApplied(String(error)); } }}>停止记录</button></>}{logApplied && <p role="status">{logApplied}</p>}<p className="hint">自动保存到下载目录 {protocol}/日期/{isSsh ? '连接名称与主机' : '车号、设备号或直连名称与地址'}/，收到可记录的输出后为当前会话创建日志，清屏不影响记录。覆盖仅清空当前会话日志。</p></section></div>}
     {isSsh && sshStatusSlot && createPortal(<span className={`connection-status telnet-connection-status${connected && sshConnection ? ' connected' : busy || sshConnecting ? ' connecting' : ''}`} role="status" aria-label="SSH 终端状态" title={sshConnection ? status : '未连接'}>{sshConnecting ? '连接中…' : sshConnection ? status : '未连接'}</span>, sshStatusSlot)}
     {displaySlot && createPortal(<div className="shared-telnet-content">{isSsh && sshConnection && !connected && !busy && <div className="inline ssh-terminal-toolbar"><button onClick={() => void openSshTerminal()}>重试终端</button></div>}<form className="inline telnet-search" onSubmit={e => { e.preventDefault(); find(); }}><input ref={searchInput} aria-label={"搜索 " + label + " 输出"} placeholder="搜索终端输出（Ctrl+F）" value={searchText} onChange={e => { setSearchText(e.target.value); searchingRef.current = false; setSearchMessage(''); searchAddon.current?.clearDecorations(); }} onKeyDown={e => { if (e.key === 'Escape') { searchingRef.current = false; searchAddon.current?.clearDecorations(); terminal.current?.focus(); } if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); find(true); } }} /><label title="区分大小写"><input aria-label="区分大小写" type="checkbox" checked={caseSensitive} onChange={e => setCaseSensitive(e.target.checked)} />Aa</label><label><input type="checkbox" checked={regex} onChange={e => setRegex(e.target.checked)} />正则</label><button type="button" disabled={!searchText} onClick={() => find(true)}>上一个</button><button disabled={!searchText}>下一个</button><span aria-live="polite">{searchMessage}</span></form>
     <div className="telnet-output" onClick={() => terminal.current?.focus()}><div ref={viewport} className="telnet-terminal-host" aria-label={label + " 交互终端"} /></div></div>, displaySlot)}
-    <TelnetCommands visible={active} protocol={protocol} settingsSlot={settingsSlot} onSend={command => { if (!connectedRef.current) { void send(''); return; } let text = command.replace(/(?:\\r|\\n|[\r\n])+$/g, '').trim(); if (!isSsh && connectedWebModeRef.current && !/^send(?:\s|$)/i.test(text)) text = 'send ' + text; void send(text + (isSsh ? '\r' : '\r\n')); terminal.current?.focus(); }} streamSlot={(groups, device) => <CommandStream key={device} protocol={protocol} groups={groups} enabled={active && connected && !(isSsh && sshDisconnecting)} send={async command => {
-      if (!activeRef.current || !connectedRef.current || (isSsh && sshDisconnectingRef.current)) throw new Error('终端未连接');
-      let text = command;
-      if (!isSsh && connectedWebModeRef.current && !/^send(?:\s|$)/i.test(text)) text = 'send ' + text;
-      await showOutputRef.current();
-      if (!isSsh && echoRef.current) terminal.current?.write(text + '\r\n');
-      await write(text + (isSsh ? '\r' : connectedWebModeRef.current ? '\n' : '\r\n'));
-    }} />} />
+    <TelnetCommands visible={active} protocol={protocol} settingsSlot={settingsSlot} onSend={command => void sendShortcut(command)} streamSlot={(groups, device) => <CommandStream key={device} protocol={protocol} groups={groups} enabled={active && connected && !(isSsh && sshDisconnecting)} send={sendTerminalCommand} />} />
     {active && logApplied && <small className="terminal-feedback" role="status">{logApplied}</small>}
     {active && <form className="inline"  onSubmit={e => { e.preventDefault(); void send(input + (isSsh ? '\r' : '\r\n')); setInput(''); }}><input type="text" aria-label={label + " 输入"} onKeyDown={e => { if (e.key === 'Enter' && (!connectedRef.current || (isSsh && sshDisconnecting)) && !input.trim()) { e.preventDefault(); if (!connectLock.current) reconnectRef.current(); } }} autoComplete="off" value={input} onChange={e => setInput(e.target.value)} placeholder={isSsh ? "输入 SSH 命令，按 Enter 发送" : "输入命令或登录信息，按 Enter 发送"} style={{ flex: 1 }} /><button disabled={!connected}>发送</button></form>}
   </section>;

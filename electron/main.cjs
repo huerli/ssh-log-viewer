@@ -54,8 +54,8 @@ function getSessionRuntime(id) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new Error('会话标识无效');
   let value = sessionRuntimes.get(id);
   if (!value) {
-    value = { id, tasks: new Map(), extractedFiles: new Set(), localRoots: new Set(), telnetSetups: new Set(), followBusy: false,
-      disconnectWork: Promise.resolve(), telnetOutputQueue: Promise.resolve(), telnetConnectionLogQueue: Promise.resolve(), telnetOutputHost: '', telnetConnectionContext: '', webTelnetActive: false };
+    value = { id, tasks: new Map(), extractedFiles: new Set(), localRoots: new Set(), followBusy: false,
+      disconnectWork: Promise.resolve(), telnetOutputQueue: Promise.resolve(), telnetConnectionLogQueue: Promise.resolve(), telnetConnectionContext: '', webTelnetActive: false };
     for (const file of [...(config?.localCopies || []).flatMap(item => item.paths || []), ...(config?.localExtractions || []).flatMap(item => item.paths || []), ...(config?.lastLocalPaths || [])]) value.extractedFiles.add(file);
     sessionRuntimes.set(id, value);
     sessionContext.run(value, () => {
@@ -277,6 +277,7 @@ async function openFile(remotePath, localPath, remoteRuntime = runtime()) {
   };
   doc.file = remote || gzip ? path.join(cacheRoot, doc.id + '.log') : localPath;
   if (/\.(pcap|pcapng|cap)(?:\.gz)?$/i.test(source) || (!remote && !gzip && await isCaptureFile(localPath))) doc.documentKind = 'pcap';
+  if (runtime().closing) throw new Error('日志标签页已关闭');
   runtime().document = doc;
   if (!gzip) doc.prefix = await prefixHash(doc);
   let preview = [];
@@ -538,16 +539,7 @@ async function follow() {
 async function startTelnetOutput(target, token) {
   await runtime().telnetOutputQueue;
   runtime().terminalModes.check(token);
-  runtime().telnetOutputFile = undefined;
-  const setup = require('./telnet-log.cjs').createTelnetLog(config.directories.download, target);
-  runtime().telnetSetups.add(setup);
-  let file;
-  try { file = await setup; } finally { runtime().telnetSetups.delete(setup); }
-  runtime().extractedFiles.add(file);
-  event({ type: 'local-files-changed' });
-  runtime().terminalModes.check(token);
-  runtime().telnetOutputHost = terminalLogTarget(target);
-  runtime().telnetOutputFile = file;
+  runtime().telnetOutput = { root: config.directories.download, target, started: new Date(), file: undefined };
 }
 function logTelnetConnection(message) {
   const line = `${new Date().toISOString()} ${runtime().telnetConnectionContext ? `[${runtime().telnetConnectionContext}] ` : ''}${message}\n`;
@@ -562,11 +554,22 @@ function logTelnetConnection(message) {
 const telnetEmit = data => {
   if (data.type === 'telnet-status') logTelnetConnection(data.message || '状态未知');
   if (data.type === 'telnet-connection-log') logTelnetConnection(data.message || '连接诊断信息未知');
-  if (data.type === 'telnet-data' && runtime().telnetOutputFile && config.telnetLogMode !== 'none') {
-    const file = runtime().telnetOutputFile;
+  const session = runtime();
+  const output = session.telnetOutput;
+  if (data.type === 'telnet-data' && output && config.telnetLogMode !== 'none') {
     let text = data.message;
     if ((config.telnetLogMode || 'printable') === 'printable') text = require('node:util').stripVTControlCharacters(text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
-    runtime().telnetOutputQueue = runtime().telnetOutputQueue.then(() => fsp.appendFile(file, text, { mode: 0o600 })).catch(error => event({ type: 'telnet-status', message: '日志写入失败：' + error.message }));
+    if (text) session.telnetOutputQueue = session.telnetOutputQueue.then(async () => {
+      if (output.file) {
+        await fsp.appendFile(output.file, text, { mode: 0o600 });
+      } else {
+        const file = await require('./telnet-log.cjs').createTelnetLog(output.root, output.target, output.started, text);
+        output.file = file;
+        session.extractedFiles.add(file);
+        event({ type: 'local-files-changed' });
+        if (session.telnetOutput === output && config.telnetLogMode !== 'none') event({ type: 'telnet-log-file', file });
+      }
+    }).catch(error => event({ type: 'telnet-log-error', message: '日志写入失败：' + error.message }));
   }
   event(data);
 };
@@ -586,8 +589,7 @@ const handlers = {
       value.closing = true;
       value.closeWork = sessionContext.run(value, async () => {
         value.terminalModes.cancel(); value.telnet.close(); value.webTelnet.close();
-        const pending = [...value.telnetSetups];
-        await Promise.allSettled([disconnect({ releasePort: true }), value.telnetOutputQueue, value.telnetConnectionLogQueue, ...pending, value.sshTerminal.drain()]);
+        await Promise.allSettled([disconnect({ releasePort: true }), value.telnetOutputQueue, value.telnetConnectionLogQueue, value.sshTerminal.drain()]);
         sessionRuntimes.delete(id);
       });
     }
@@ -621,6 +623,7 @@ const handlers = {
     return mode === 'none' ? null : runtime().sshTerminal.outputFile || null;
   },
   sshTerminalSaveOutput: async () => {
+    await runtime().sshTerminal.drain();
     const file = runtime().sshTerminal.outputFile;
     if (!file) throw new Error('尚无 SSH 命令终端会话输出');
     const host = terminalLogTarget(runtime().sshTerminal.outputTarget);
@@ -684,9 +687,11 @@ const handlers = {
     }
   },
   telnetSaveOutput: async () => {
-    if (!runtime().telnetOutputFile) throw new Error('尚无 Telnet 会话输出');
-    const file = runtime().telnetOutputFile;
-    const chosen = await dialog.showSaveDialog(win, { title: '保存 Telnet 输出', defaultPath: path.join(app.getPath('downloads'), 'telnet-' + runtime().telnetOutputHost + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt'), filters: [{ name: '文本日志', extensions: ['txt', 'log'] }] });
+    const output = runtime().telnetOutput;
+    await runtime().telnetOutputQueue;
+    const file = output?.file;
+    if (!file) throw new Error('尚无 Telnet 会话输出');
+    const chosen = await dialog.showSaveDialog(win, { title: '保存 Telnet 输出', defaultPath: path.join(app.getPath('downloads'), 'telnet-' + terminalLogTarget(output.target) + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt'), filters: [{ name: '文本日志', extensions: ['txt', 'log'] }] });
     if (chosen.canceled || !chosen.filePath) return null;
     await runtime().telnetOutputQueue;
     await fsp.copyFile(file, chosen.filePath);
@@ -694,14 +699,19 @@ const handlers = {
   },
   telnetRecording: async (mode, append) => {
     if (!['none', 'printable', 'all'].includes(mode)) throw new Error('日志类型无效');
-    await runtime().telnetOutputQueue;
+    const session = runtime();
+    const output = session.telnetOutput;
     config.telnetLogMode = mode;
-    await save();
-    if (mode === 'none') return null;
-    // Applying overwrite only clears the current session, never older sessions.
-    if (runtime().telnetOutputFile && !append) await fsp.writeFile(runtime().telnetOutputFile, '', { mode: 0o600 });
+    let pending = session.telnetOutputQueue;
+    if (mode !== 'none' && !append) {
+      pending = pending.then(async () => {
+        if (output?.file) await fsp.writeFile(output.file, '', { mode: 0o600 });
+      });
+      session.telnetOutputQueue = pending.catch(() => {});
+    }
+    await Promise.all([pending, save()]);
     event({ type: 'local-files-changed' });
-    return runtime().telnetOutputFile || null;
+    return mode === 'none' ? null : output?.file || null;
   },
   telnetWrite: text => runtime().webTelnetActive ? runtime().webTelnet.write(text) : runtime().telnet.write(text),
   telnetClose: () => { runtime().terminalModes.cancel(); runtime().telnet.close(); runtime().webTelnet.close(); event({ type: 'telnet-status', message: '已断开' }); },
@@ -829,6 +839,8 @@ const handlers = {
       return { path: chosen.filePath, count: data.matches.length };
     } finally { await reader.cleanup(); }
   },
+  readClipboardText: () => clipboard.readText(),
+  pasteClipboard: () => win.webContents.paste(),
   copyText: text => {
     if (typeof text !== 'string' || text.length > 1024 * 1024) throw new Error('复制内容无效或过长');
     clipboard.writeText(text);

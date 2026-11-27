@@ -2,7 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 
-async function createTelnetLog(root, target, now = new Date()) {
+async function createTelnetLog(root, target, now = new Date(), text = '') {
   const part = value => String(value).padStart(2, '0');
   const date = `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}`;
   const host = require('./source-names.cjs').terminalLogTarget(target);
@@ -10,7 +10,7 @@ async function createTelnetLog(root, target, now = new Date()) {
   await fs.mkdir(folder, { recursive: true, mode: 0o700 });
   const time = `${part(now.getHours())}-${part(now.getMinutes())}-${part(now.getSeconds())}`;
   const file = path.join(folder, `${time}-${randomUUID()}.log`);
-  await fs.writeFile(file, '', { flag: 'wx', mode: 0o600 });
+  await fs.writeFile(file, text, { flag: 'wx', mode: 0o600 });
   return file;
 }
 module.exports = { createTelnetLog };

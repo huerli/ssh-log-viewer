@@ -7,11 +7,15 @@ const net = require('node:net');
 (async () => {
  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'viewer-stream-'));
  const sockets = new Set(), sent = [], errors = [];
- let app;
+ let app, rawInput = '';
+ let captureRaw = false;
  const server = net.createServer(socket => {
   sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.on('error', () => {});
+  socket.write('Clipboard fixture ready\r\n');
   let pending = '';
-  socket.on('data', data => { pending += data.toString(); while (pending.includes('\n')) { const pos = pending.indexOf('\n'); const text = pending.slice(0,pos).trim(); pending = pending.slice(pos+1); if(text) sent.push({text, time: Date.now()}); } });
+  socket.on('data', data => {
+   if (captureRaw) { rawInput += data.toString(); return; }
+   pending += data.toString(); while (pending.includes('\n')) { const pos = pending.indexOf('\n'); const text = pending.slice(0,pos).trim(); pending = pending.slice(pos+1); if(text) sent.push({text, time: Date.now()}); } });
  });
  try {
   await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
@@ -23,7 +27,7 @@ const net = require('node:net');
   assert.match(await page.locator('.brand small').first().innerText(),new RegExp('v' + backendVersion.replaceAll('.', '\\.')));
   await page.evaluate(port => {
    localStorage.setItem('direct-telnet-nodes',JSON.stringify([{id:'fixture',name:'20',host:'127.0.0.1',port}]));
-   localStorage.setItem('telnet-command-groups',JSON.stringify([{id:'g',name:'测试',commands:[{id:'a',name:'设备信息',text:'first'},{id:'b',name:'配置',text:'second {{值}}',color:'#123456'}]}]));
+   localStorage.setItem('telnet-command-groups',JSON.stringify([{id:'g',name:'测试',commands:[{id:'a',name:'设备信息',text:'first'},{id:'b',name:'配置',text:'second {{值}}',color:'#123456'},{id:'multi',name:'多行命令',text:'shortcut one\r\n  \nshortcut two\nshortcut three'}]}]));
   }, server.address().port);
   await page.reload();
   const ui = page.locator('.session-workspace:visible');
@@ -32,6 +36,50 @@ const net = require('node:net');
   await select.selectOption('fixture');
   await ui.locator('.telnet-connection-actions').getByRole('button',{name:'连接',exact:true}).click();
   await ui.getByLabel('Telnet 连接状态',{exact:true}).filter({hasText:'已连接'}).waitFor();
+  await ui.locator('.command-button-bar').getByRole('button', { name: '多行命令', exact: true }).click();
+  const deadline = Date.now() + 2000;
+  while (sent.length < 3 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(sent.map(entry => entry.text), ['shortcut one', 'shortcut two', 'shortcut three']);
+  assert.ok(sent[1].time - sent[0].time >= 8);
+  assert.ok(sent[2].time - sent[1].time >= 8);
+  sent.length = 0;
+  const terminalInput = ui.getByLabel('Telnet 交互终端', { exact: true }).locator('.xterm-helper-textarea');
+  captureRaw = true;
+  await terminalInput.focus();
+  await page.keyboard.press('Control+c');
+  const interruptDeadline = Date.now() + 2000;
+  while (!rawInput.includes('\x03') && Date.now() < interruptDeadline) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(rawInput, '\x03', 'Ctrl+C without a selection must interrupt the terminal');
+  const terminalRow = ui.locator('.xterm-rows > div').filter({ hasText: 'Clipboard fixture ready' }).first();
+  for (const shortcut of ['Control+c', 'Control+Shift+c']) {
+    await app.evaluate(({ clipboard }) => clipboard.clear());
+    await terminalRow.click({ clickCount: 3, force: true, position: { x: 30, y: 6 } });
+    await page.keyboard.press(shortcut);
+    await page.locator('.clipboard-feedback.visible').waitFor();
+    assert.match(await app.evaluate(({ clipboard }) => clipboard.readText()), /Clipboard fixture ready/);
+  }
+  assert.equal(rawInput, '\x03', 'copying selected output must not write to the terminal');
+  await terminalInput.focus();
+  for (const [shortcut, value] of [['Control+v', 'plain-paste'], ['Control+Shift+v', 'shift-paste']]) {
+    await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), value);
+    await page.keyboard.press(shortcut);
+    const pasteDeadline = Date.now() + 2000;
+    while (!rawInput.endsWith(value) && Date.now() < pasteDeadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(rawInput.endsWith(value), `expected ${shortcut} to send clipboard text`);
+  }
+  captureRaw = false;
+
+  const inputField = ui.getByLabel('Telnet 输入', { exact: true });
+  await inputField.fill('field-copy');
+  await inputField.selectText();
+  await inputField.press('Control+Shift+c');
+  assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), 'field-copy');
+  await inputField.fill('');
+  await inputField.press('Control+Shift+v');
+  await page.waitForFunction(() => document.activeElement?.value === 'field-copy');
+  await inputField.fill('');
+
+
   await ui.getByRole('button',{name:'流式执行…',exact:true}).click();
   const dialog = ui.getByRole('dialog',{name:'流式执行命令'});
   await page.mouse.click(5,5);
@@ -162,7 +210,7 @@ const net = require('node:net');
   await finalManager.getByRole('button',{name:'完成',exact:true}).click();
   assert.equal(await reloadedDevices.inputValue(),'');
   assert.equal(await reloadedUi.locator('.command-button-bar:visible').getByLabel('按钮组',{exact:true}).inputValue(),'g');
-  assert.equal(await reloadedUi.locator('.command-button-bar:visible .command-buttons button').count(),2,'removing device preserves commands');
+  assert.equal(await reloadedUi.locator('.command-button-bar:visible .command-buttons button').count(),3,'removing device preserves commands');
   await reloadedDevices.selectOption('__manage__');
   await restarted.evaluate(()=>{ document.documentElement.dataset.theme='amber'; });
   await restarted.setViewportSize({width:820,height:700});
@@ -212,7 +260,7 @@ const net = require('node:net');
   await editor.getByRole('button',{name:'保存修改',exact:true}).click();
   let moved = await restarted.evaluate(()=>JSON.parse(localStorage.getItem('telnet-command-groups')));
   assert.deepEqual(moved.find(item=>item.name==='屏幕常用').commands,[originalCommand]);
-  assert.equal(moved.find(item=>item.id==='g').commands.length,1,'move removes command from original group');
+  assert.equal(moved.find(item=>item.id==='g').commands.length,2,'move removes command from original group');
   assert.equal(await reloadedDevices.inputValue(),'屏幕','toolbar follows destination');
   async function editMoved() {
     await reloadedUi.locator('.command-button-bar:visible .command-buttons button').filter({hasText:'配置'}).click({button:'right'});

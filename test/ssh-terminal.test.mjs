@@ -38,13 +38,16 @@ function fixture(overrides = {}) {
 
 test('SSH terminal reuses authenticated client with PTY, raw input, resize, stdout/stderr and independent close', async () => {
   const writes = [];
-  const f = fixture({ fileSystem: { appendFile: async (...args) => writes.push(args) } });
+  const f = fixture({
+    createLog: async (_root, _target, _started, text) => { writes.push(['/session.log', text]); return '/session.log'; },
+    fileSystem: { appendFile: async (...args) => writes.push(args) }
+  });
   assert.equal(await f.terminal.open(120, 35), true);
   assert.deepEqual(f.requests, [{ term: 'xterm-256color', cols: 120, rows: 35 }]);
   assert.equal(f.channels[0].encoding, 'utf8');
   assert.equal(f.channels[0].stderr.encoding, 'utf8');
   assert.equal(f.events.at(-1).message, '已连接');
-  assert.equal(f.events.at(-1).file, '/session.log');
+  assert.equal(f.terminal.outputFile, undefined);
   f.terminal.write('echo 测试\r'); f.terminal.write('\x03');
   f.terminal.resize(90, 20);
   assert.deepEqual(f.channels[0].written, ['echo 测试\r', '\x03']);
@@ -53,6 +56,7 @@ test('SSH terminal reuses authenticated client with PTY, raw input, resize, stdo
   f.channels[0].stderr.emit('data', 'stderr\r\n');
   await f.terminal.drain();
   assert.deepEqual(writes.map(args => args[1]), ['中文\r\n', 'stderr\r\n']);
+  assert.equal(f.events.find(event => event.type === 'ssh-terminal-log-file').file, '/session.log');
   assert.equal(f.events.filter(event => event.type === 'ssh-terminal-data').length, 2);
   f.terminal.close();
   assert.ok(f.channels[0].destroyed);
@@ -68,15 +72,23 @@ test('SSH output recording respects none/all/printable and overwrite/export affe
   const f = fixture({ getRoot: () => root, createLog: createSshLog });
   try {
     await f.terminal.open();
-    const first = f.terminal.outputFile;
+    assert.equal(f.terminal.outputFile, undefined);
+    f.channels[0].emit('data', '\x1b[31m\x1b[0m\x07');
+    await f.terminal.drain();
+    assert.equal(f.terminal.outputFile, undefined);
     f.channels[0].emit('data', 'older\n');
+    await f.terminal.drain();
+    const first = f.terminal.outputFile;
     await f.terminal.open();
-    const second = f.terminal.outputFile;
-    assert.notEqual(first, second);
+    assert.equal(f.terminal.outputFile, undefined);
     assert.equal(await readFile(first, 'utf8'), 'older\n');
     f.setMode('none'); f.channels[1].emit('data', 'ignored\n');
+    await f.terminal.drain();
+    assert.equal(f.terminal.outputFile, undefined);
     f.setMode('all'); f.channels[1].emit('data', '\x1b[31mraw\x1b[0m\n');
     await f.terminal.drain();
+    const second = f.terminal.outputFile;
+    assert.notEqual(first, second);
     assert.equal(await readFile(second, 'utf8'), '\x1b[31mraw\x1b[0m\n');
     const overwriting = f.terminal.overwrite();
     f.setMode('printable'); f.channels[1].emit('data', '\x1b[32mcurrent\x1b[0m\n');
@@ -107,6 +119,7 @@ test('SSH session log paths are dated, unique and contain unsafe host strings', 
 test('failed SSH logging leaves the live terminal usable and emits a separate log error', async () => {
   const f = fixture({ fileSystem: { appendFile: async () => { throw new Error('disk full'); } } });
   await f.terminal.open();
+  f.channels[0].emit('data', 'first');
   f.channels[0].emit('data', 'still displayed');
   await f.terminal.drain();
   assert.match(f.events.at(-1).message, /disk full/);
@@ -116,14 +129,18 @@ test('failed SSH logging leaves the live terminal usable and emits a separate lo
   f.terminal.close();
   const missingLog = fixture({ createLog: async () => { throw new Error('permission denied'); } });
   await missingLog.terminal.open();
-  assert.equal(missingLog.events[0].type, 'ssh-terminal-log-error');
   assert.equal(missingLog.events.at(-1).message, '已连接');
+  missingLog.channels[0].emit('data', 'first');
+  await missingLog.terminal.drain();
+  assert.equal(missingLog.events.at(-1).type, 'ssh-terminal-log-error');
   missingLog.terminal.close();
 });
 
-test('closing a pending SSH log setup prevents shell creation and drain waits for setup', async () => {
+test('canceling a new SSH shell while the previous log is pending isolates their output', async () => {
   const log = deferred();
   const f = fixture({ createLog: () => log.promise });
+  await f.terminal.open();
+  f.channels[0].emit('data', 'previous output');
   const opening = f.terminal.open();
   await tick();
   f.terminal.close();
@@ -133,9 +150,10 @@ test('closing a pending SSH log setup prevents shell creation and drain waits fo
   await tick(); assert.equal(drained, false);
   log.resolve('/late.log');
   await draining;
-  assert.equal(f.requests.length, 0);
+  assert.equal(f.requests.length, 1);
   assert.equal(f.terminal.outputFile, undefined);
-  assert.equal(f.events.some(event => event.message === '已连接'), false);
+  assert.equal(f.events.filter(event => event.message === '已连接').length, 1);
+  assert.equal(f.events.some(event => event.type === 'ssh-terminal-log-file'), false);
 });
 
 test('late SSH shell callbacks cannot revive a closed terminal or overwrite the next session', async () => {
